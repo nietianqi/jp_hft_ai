@@ -114,41 +114,55 @@ class MetaStrategyManager:
             state.max_position = max(100, max_pos)
     
     def can_execute_signal(
-        self, 
-        strategy_type: StrategyType, 
-        side: str, 
+        self,
+        strategy_type: StrategyType,
+        side: str,
         quantity: int,
     ) -> tuple[bool, str]:
-        """判断是否可以执行某个策略的信号"""
+        """判断是否可以执行某个策略的信号 - 修复版"""
         state = self.strategies[strategy_type]
-        
+
         if not state.enabled:
             return False, f"{strategy_type.name} 已禁用"
-        
+
         if state.realized_pnl <= -self.cfg.strategy_loss_limit:
             return False, f"{strategy_type.name} 达到日亏损限额"
-        
+
         if self.daily_pnl <= -self.cfg.daily_loss_limit:
             return False, "全局达到日亏损限额"
-        
+
+        # ✅ 修复: 先检查当前仓位绝对值是否已达上限
+        current_abs_pos = abs(state.position)
+        if current_abs_pos >= state.max_position:
+            # 只允许平仓方向的订单
+            is_closing = (side == "SELL" and state.position > 0) or \
+                         (side == "BUY" and state.position < 0)
+            if not is_closing:
+                return False, f"{strategy_type.name} 仓位已达上限{state.max_position},仅允许平仓"
+
+        # ✅ 修复: 计算新仓位并检查绝对值
         if side == "BUY":
             new_pos = state.position + quantity
-            if new_pos > state.max_position:
-                return False, f"{strategy_type.name} 多头仓位超限"
-            
-            new_total = self.total_position + quantity
-            if new_total > self.cfg.max_total_position:
-                return False, "总仓位超限"
-        
-        elif side == "SELL":
+        else:
             new_pos = state.position - quantity
-            if new_pos < -state.max_position:
-                return False, f"{strategy_type.name} 空头仓位超限"
-            
-            new_total = self.total_position - quantity
-            if new_total < -self.cfg.max_total_position:
-                return False, "总仓位超限"
-        
+
+        # ✅ 修复: 检查新仓位的绝对值 - 允许减仓
+        if abs(new_pos) > state.max_position:
+            # 允许减仓：如果新仓位的绝对值 < 当前仓位的绝对值
+            is_reducing = abs(new_pos) < abs(state.position)
+            if not is_reducing:
+                return False, f"{strategy_type.name} 新仓位{abs(new_pos)}超过限额{state.max_position}"
+
+        # ✅ 修复: 检查总仓位的绝对值 - 允许减仓
+        new_total = self.total_position + (quantity if side == "BUY" else -quantity)
+
+        # 如果新仓位超限，检查是否为减仓方向
+        if abs(new_total) > self.cfg.max_total_position:
+            # 允许减仓：如果新仓位的绝对值 < 当前仓位的绝对值
+            is_reducing = abs(new_total) < abs(self.total_position)
+            if not is_reducing:
+                return False, f"总仓位{abs(new_total)}超限{self.cfg.max_total_position}"
+
         return True, "OK"
     
     def on_signal(

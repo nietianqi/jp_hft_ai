@@ -325,9 +325,9 @@ class OrderFlowAlternativeStrategy:
     def on_fill(self, fill: Dict[str, Any]) -> None:
         if fill.get("symbol") != self.cfg.symbol:
             return
-        
+
         side = fill["side"]
-        size = int(fill["size"])
+        size = int(fill.get("size", fill.get("quantity", 0)))
         price = float(fill["price"])
         
         prev_pos = self.position

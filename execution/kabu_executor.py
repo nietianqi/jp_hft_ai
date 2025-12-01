@@ -252,6 +252,57 @@ class KabuOrderExecutor(OrderExecutor):
             except Exception as e:
                 return 'ERROR'
 
+    def send_order(self, symbol: str, side: str, price: float, qty: int, order_type: str = "LIMIT") -> Optional[str]:
+        """同步接口:发送订单(兼容策略调用) - 使用线程池处理"""
+        import asyncio
+        import concurrent.futures
+        import threading
+
+        # 在新线程中运行异步任务
+        result = [None]
+        exception = [None]
+
+        def run_async():
+            try:
+                # 创建新的事件循环
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+
+                if side == "BUY":
+                    from models.trading_models import TradingSignal
+                    signal = TradingSignal(
+                        symbol=symbol,
+                        action=1,  # BUY action
+                        quantity=qty,
+                        price=price,
+                        confidence=1.0
+                    )
+                    result[0] = loop.run_until_complete(self.submit_buy_order(signal))
+                else:
+                    result[0] = loop.run_until_complete(
+                        self.submit_sell_order(symbol, qty, price, "strategy_exit")
+                    )
+
+                loop.close()
+            except Exception as e:
+                exception[0] = e
+
+        thread = threading.Thread(target=run_async)
+        thread.start()
+        thread.join(timeout=5.0)  # 5秒超时
+
+        if exception[0]:
+            print(f"[Executor] 下单异常: {exception[0]}")
+            return None
+
+        return result[0]
+
+    def cancel_order(self, order_id: str) -> bool:
+        """同步接口:撤单(兼容策略调用)"""
+        # 简化版本:直接返回False,真实环境需要实现
+        print(f"[Executor] 撤单请求: {order_id} (当前为简化实现)")
+        return False
+
     async def close(self):
         if self.http_client:
             await self.http_client.aclose()

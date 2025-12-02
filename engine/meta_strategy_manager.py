@@ -20,6 +20,9 @@ class StrategyType(IntEnum):
     MARKET_MAKING = 0
     LIQUIDITY_TAKER = 1
     ORDER_FLOW = 2
+    MICRO_GRID = 3          # ✅新增: 微网格震荡剥头皮
+    SHORT_MOMENTUM = 4      # ✅新增: 短周期动量跟随
+    TAPE_READING = 5        # ✅新增: 盘口统计订单流
 
 
 @dataclass
@@ -39,10 +42,14 @@ class MetaStrategyConfig:
     
     def __post_init__(self):
         if self.strategy_weights is None:
+            # ✅新增: 6策略权重配置 (更分散风险)
             self.strategy_weights = {
-                StrategyType.MARKET_MAKING: 0.3,
-                StrategyType.LIQUIDITY_TAKER: 0.4,
-                StrategyType.ORDER_FLOW: 0.3,
+                StrategyType.MARKET_MAKING: 0.15,      # 做市 15%
+                StrategyType.LIQUIDITY_TAKER: 0.15,    # 流动性抢占 15%
+                StrategyType.ORDER_FLOW: 0.10,         # 订单流 10%
+                StrategyType.MICRO_GRID: 0.25,         # 微网格 25% (适合震荡市)
+                StrategyType.SHORT_MOMENTUM: 0.20,     # 短动量 20% (适合趋势)
+                StrategyType.TAPE_READING: 0.15,       # 盘口统计 15%
             }
 
 
@@ -74,6 +81,7 @@ class MetaStrategyManager:
     def __init__(self, config: MetaStrategyConfig):
         self.cfg = config
         
+        # ✅新增: 初始化6个策略状态
         self.strategies: Dict[StrategyType, StrategyState] = {
             StrategyType.MARKET_MAKING: StrategyState(
                 strategy_type=StrategyType.MARKET_MAKING,
@@ -86,6 +94,18 @@ class MetaStrategyManager:
             StrategyType.ORDER_FLOW: StrategyState(
                 strategy_type=StrategyType.ORDER_FLOW,
                 weight=config.strategy_weights[StrategyType.ORDER_FLOW],
+            ),
+            StrategyType.MICRO_GRID: StrategyState(
+                strategy_type=StrategyType.MICRO_GRID,
+                weight=config.strategy_weights[StrategyType.MICRO_GRID],
+            ),
+            StrategyType.SHORT_MOMENTUM: StrategyState(
+                strategy_type=StrategyType.SHORT_MOMENTUM,
+                weight=config.strategy_weights[StrategyType.SHORT_MOMENTUM],
+            ),
+            StrategyType.TAPE_READING: StrategyState(
+                strategy_type=StrategyType.TAPE_READING,
+                weight=config.strategy_weights[StrategyType.TAPE_READING],
             ),
         }
         
@@ -119,49 +139,39 @@ class MetaStrategyManager:
         side: str,
         quantity: int,
     ) -> tuple[bool, str]:
-        """判断是否可以执行某个策略的信号 - 修复版"""
+        """✅修复: 优化仓位检查逻辑，合并冗余判断"""
         state = self.strategies[strategy_type]
 
+        # 1. 策略启用状态检查
         if not state.enabled:
             return False, f"{strategy_type.name} 已禁用"
 
+        # 2. 亏损限额检查
         if state.realized_pnl <= -self.cfg.strategy_loss_limit:
             return False, f"{strategy_type.name} 达到日亏损限额"
 
         if self.daily_pnl <= -self.cfg.daily_loss_limit:
             return False, "全局达到日亏损限额"
 
-        # ✅ 修复: 先检查当前仓位绝对值是否已达上限
-        current_abs_pos = abs(state.position)
-        if current_abs_pos >= state.max_position:
-            # 只允许平仓方向的订单
-            is_closing = (side == "SELL" and state.position > 0) or \
-                         (side == "BUY" and state.position < 0)
-            if not is_closing:
-                return False, f"{strategy_type.name} 仓位已达上限{state.max_position},仅允许平仓"
-
-        # ✅ 修复: 计算新仓位并检查绝对值
+        # 3. ✅优化: 统一仓位检查逻辑
+        # 计算新仓位
         if side == "BUY":
             new_pos = state.position + quantity
         else:
             new_pos = state.position - quantity
 
-        # ✅ 修复: 检查新仓位的绝对值 - 允许减仓
-        if abs(new_pos) > state.max_position:
-            # 允许减仓：如果新仓位的绝对值 < 当前仓位的绝对值
-            is_reducing = abs(new_pos) < abs(state.position)
-            if not is_reducing:
-                return False, f"{strategy_type.name} 新仓位{abs(new_pos)}超过限额{state.max_position}"
-
-        # ✅ 修复: 检查总仓位的绝对值 - 允许减仓
         new_total = self.total_position + (quantity if side == "BUY" else -quantity)
 
-        # 如果新仓位超限，检查是否为减仓方向
-        if abs(new_total) > self.cfg.max_total_position:
-            # 允许减仓：如果新仓位的绝对值 < 当前仓位的绝对值
-            is_reducing = abs(new_total) < abs(self.total_position)
-            if not is_reducing:
-                return False, f"总仓位{abs(new_total)}超限{self.cfg.max_total_position}"
+        # 判断是否为减仓操作
+        is_reducing = abs(new_pos) < abs(state.position)
+
+        # 检查策略仓位限制
+        if abs(new_pos) > state.max_position and not is_reducing:
+            return False, f"{strategy_type.name} 新仓位{abs(new_pos)}超过限额{state.max_position}"
+
+        # 检查总仓位限制
+        if abs(new_total) > self.cfg.max_total_position and not is_reducing:
+            return False, f"总仓位{abs(new_total)}超限{self.cfg.max_total_position}"
 
         return True, "OK"
     

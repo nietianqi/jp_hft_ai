@@ -40,8 +40,15 @@ class OrderFlowAlternativeConfig:
     max_queue_wait_seconds: int = 3
     
     max_position: int = 100
-    take_profit_ticks: int = 2
-    stop_loss_ticks: int = 100
+
+    # ✅修复: 改为动态止盈模式
+    enable_dynamic_exit: bool = True
+    dynamic_profit_threshold_ticks: float = 3.0
+    dynamic_reversal_ticks: float = 1.5
+
+    # 传统止盈止损
+    take_profit_ticks: int = 5
+    stop_loss_ticks: int = 10
     time_stop_seconds: int = 5
     
     signal_cooldown_seconds: float = 1.0
@@ -68,13 +75,16 @@ class OrderFlowAlternativeStrategy:
         self.meta = meta_manager
         
         self.board_history: Deque[BoardSnapshot] = deque()
-        
+
         self.position: int = 0
         self.avg_price: Optional[float] = None
         self.entry_time: Optional[datetime] = None
-        
+
         self.active_order_id: Optional[str] = None
         self.last_signal_time: Optional[datetime] = None
+
+        # ✅新增: 动态止盈状态追踪
+        self.best_profit_price: Optional[float] = None
     
     def on_board(self, board: Dict[str, Any]) -> None:
         if board.get("symbol") != self.cfg.board_symbol:
@@ -187,19 +197,20 @@ class OrderFlowAlternativeStrategy:
         best_bid = float(board["best_bid"])
         best_ask = float(board["best_ask"])
         
+        # ✅修复: 提升置信度阈值至0.6 (60%)
         if (
             pressure >= self.cfg.buy_pressure_threshold
             and momentum >= self.cfg.min_price_momentum_ticks
             and depth_imb >= self.cfg.depth_imbalance_long
-            and confidence >= 0.3
+            and confidence >= 0.6  # ← 从0.3提升到0.6
         ):
             self._enter_long(best_ask, now, flow_metrics)
-        
+
         elif (
             pressure <= self.cfg.sell_pressure_threshold
             and momentum <= -self.cfg.min_price_momentum_ticks
             and depth_imb <= self.cfg.depth_imbalance_short
-            and confidence >= 0.3
+            and confidence >= 0.6  # ← 从0.3提升到0.6
         ):
             self._enter_short(best_bid, now, flow_metrics)
     
@@ -272,26 +283,58 @@ class OrderFlowAlternativeStrategy:
         logger.info(f"{self.cfg.log_prefix} 做空 {qty}@{aggressive_price:.1f}")
     
     def _manage_position(self, now: datetime, board: Dict[str, Any]) -> None:
+        """✅修复: 支持动态止盈模式"""
         if self.position == 0 or not board or self.avg_price is None:
             return
-        
+
         last_price = float(board["last_price"])
         pnl_ticks = (last_price - self.avg_price) / self.cfg.tick_size
-        
+
         if self.position < 0:
             pnl_ticks = -pnl_ticks
-        
+
         reason = None
-        if pnl_ticks >= self.cfg.take_profit_ticks:
-            reason = "take_profit"
-        elif pnl_ticks <= -self.cfg.stop_loss_ticks:
-            reason = "stop_loss"
-        elif (
-            self.entry_time
-            and (now - self.entry_time).total_seconds() >= self.cfg.time_stop_seconds
-        ):
-            reason = "time_stop"
-        
+
+        # ========== 模式1: 动态止盈 ==========
+        if self.cfg.enable_dynamic_exit:
+            # 更新最优价格
+            if self.best_profit_price is None:
+                self.best_profit_price = last_price
+            else:
+                if self.position > 0 and last_price > self.best_profit_price:
+                    self.best_profit_price = last_price
+                elif self.position < 0 and last_price < self.best_profit_price:
+                    self.best_profit_price = last_price
+
+            # 判断是否有盈利
+            has_profit = pnl_ticks >= self.cfg.dynamic_profit_threshold_ticks
+
+            if has_profit:
+                # 有盈利时，检查方向是否反转
+                if self.position > 0:
+                    reversal_ticks = (self.best_profit_price - last_price) / self.cfg.tick_size
+                else:
+                    reversal_ticks = (last_price - self.best_profit_price) / self.cfg.tick_size
+
+                if reversal_ticks >= self.cfg.dynamic_reversal_ticks:
+                    reason = "dynamic_exit_reversal"
+                    print(f"✅ {self.cfg.log_prefix} [动态止盈] 触发! 盈利={pnl_ticks:.1f}T, 回撤={reversal_ticks:.1f}T → 平仓")
+            else:
+                # 亏损时不止损，等待反转
+                logger.debug(f"{self.cfg.log_prefix} [动态止盈] 暂无盈利({pnl_ticks:.1f}T)，继续持有")
+
+        # ========== 模式2: 传统止盈止损 ==========
+        else:
+            if pnl_ticks >= self.cfg.take_profit_ticks:
+                reason = "take_profit"
+            elif pnl_ticks <= -self.cfg.stop_loss_ticks:
+                reason = "stop_loss"
+            elif (
+                self.entry_time
+                and (now - self.entry_time).total_seconds() >= self.cfg.time_stop_seconds
+            ):
+                reason = "time_stop"
+
         if reason:
             self._close_position(reason, board)
     
@@ -347,11 +390,13 @@ class OrderFlowAlternativeStrategy:
         if prev_pos == 0 and new_pos != 0:
             self.avg_price = price
             self.entry_time = datetime.now()
+            self.best_profit_price = None  # ✅重置动态止盈状态
         elif prev_pos * new_pos > 0:
             self.avg_price = (self.avg_price * abs(prev_pos) + price * size) / abs(new_pos)
         elif prev_pos != 0 and new_pos == 0:
             self.avg_price = None
             self.entry_time = None
+            self.best_profit_price = None  # ✅重置动态止盈状态
         
         self.position = new_pos
         

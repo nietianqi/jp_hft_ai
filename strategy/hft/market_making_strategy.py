@@ -49,8 +49,8 @@ class MarketMakingConfig:
     # 1. 有盈利时，方向不对(回撤)就平仓
     # 2. 方向对时，不平仓，让利润奔跑
     # 3. 亏损时，不止损，等待反转
-    dynamic_profit_threshold_ticks: float = 0.5  # 盈利阈值(大于此值才算有盈利)
-    dynamic_reversal_ticks: float = 0.3          # 方向反转阈值(回撤多少tick算反转)
+    dynamic_profit_threshold_ticks: float = 3.0  # ✅修复: 盈利阈值提升至3 ticks (0.3日元), 覆盖手续费+滑点
+    dynamic_reversal_ticks: float = 1.5          # ✅修复: 回撤阈值提升至1.5 ticks, 避免过早平仓
 
     # 移动止盈配置 (传统模式，当enable_dynamic_exit=False时使用)
     enable_trailing_stop: bool = True           # 启用移动止盈
@@ -162,6 +162,7 @@ class MarketMakingStrategy:
                 # 方向不对(回撤) → 平仓止盈
                 if reversal_ticks >= self.cfg.dynamic_reversal_ticks:
                     reason = "dynamic_exit_reversal"
+                    print(f"✅ {self.cfg.log_prefix} [动态止盈] 触发! 盈利={pnl_ticks:.1f}T, 回撤={reversal_ticks:.1f}T → 平仓")
                     logger.info(f"{self.cfg.log_prefix} [动态止盈] 方向反转! 盈利={pnl_ticks:.1f}T, 回撤={reversal_ticks:.1f}T → 平仓")
                 else:
                     # 方向正确 → 继续持有
@@ -224,7 +225,7 @@ class MarketMakingStrategy:
     def _exit_position(self, reason: str) -> None:
         if self.position == 0 or not self.board:
             return
-        
+
         qty = abs(self.position)
         if self.position > 0:
             side = "SELL"
@@ -232,7 +233,9 @@ class MarketMakingStrategy:
         else:
             side = "BUY"
             price = float(self.board["best_ask"])
-        
+
+        print(f"📤 {self.cfg.log_prefix} [平仓] {reason}: {side} {qty}股 @ {price:.1f}")
+
         # ✅修复:正确的import路径
         if self.meta:
             from engine.meta_strategy_manager import StrategyType
@@ -240,8 +243,9 @@ class MarketMakingStrategy:
                 StrategyType.MARKET_MAKING, side, price, qty, reason
             )
             if not can_exec:
+                print(f"❌ {self.cfg.log_prefix} [平仓被拒] {msg}")
                 return
-        
+
         from engine.meta_strategy_manager import StrategyType
         oid = self.gateway.send_order(
             symbol=self.cfg.symbol,
@@ -251,6 +255,7 @@ class MarketMakingStrategy:
             order_type="LIMIT",
             strategy_type=StrategyType.MARKET_MAKING,  # ← 新增：标识订单来源
         )
+        logger.info(f"{self.cfg.log_prefix} 平仓订单已发送: {oid}, reason={reason}")
     
     def _update_quotes(self, now: datetime) -> None:
         if not self.board:

@@ -49,8 +49,8 @@ class MarketMakingConfig:
     # 1. 有盈利时，方向不对(回撤)就平仓
     # 2. 方向对时，不平仓，让利润奔跑
     # 3. 亏损时，不止损，等待反转
-    dynamic_profit_threshold_ticks: float = 0.5  # 盈利阈值(大于此值才算有盈利)
-    dynamic_reversal_ticks: float = 0.3          # 方向反转阈值(回撤多少tick算反转)
+    dynamic_profit_threshold_ticks: float = 3.0  # ✅修复: 盈利阈值提升至3 ticks (0.3日元), 覆盖手续费+滑点
+    dynamic_reversal_ticks: float = 1.5          # ✅修复: 回撤阈值提升至1.5 ticks, 避免过早平仓
 
     # 移动止盈配置 (传统模式，当enable_dynamic_exit=False时使用)
     enable_trailing_stop: bool = True           # 启用移动止盈

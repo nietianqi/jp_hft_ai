@@ -20,11 +20,17 @@ class LiquidityTakerConfig:
     tick_size: float = 0.1
     order_volume: int = 100
     max_position: int = 100
-    
-    take_profit_ticks: int = 2
-    stop_loss_ticks: int = 100
+
+    # ✅修复: 改为动态止盈模式，与做市策略一致
+    enable_dynamic_exit: bool = True            # 启用动态止盈模式
+    dynamic_profit_threshold_ticks: float = 3.0 # 盈利阈值3 ticks才启动追踪
+    dynamic_reversal_ticks: float = 1.5         # 回撤1.5 ticks触发平仓
+
+    # 传统止盈止损(当enable_dynamic_exit=False时使用)
+    take_profit_ticks: int = 5      # 止盈5 ticks (0.5日元)
+    stop_loss_ticks: int = 10       # 止损10 ticks (1.0日元)
     time_stop_seconds: int = 5
-    
+
     max_slip_ticks: int = 1
     depth_levels: int = 5
     depth_imbalance_thresh_long: float = 0.4
@@ -53,12 +59,15 @@ class KabuLiquidityTakerScalper:
         self.position: int = 0
         self.avg_price: Optional[float] = None
         self.entry_time: Optional[datetime] = None
-        
+
         self.board: Optional[Dict[str, Any]] = None
         self.price_window: Deque[PricePoint] = deque()
-        
+
         self.last_signal_time: Optional[datetime] = None
         self.active_order_id: Optional[str] = None
+
+        # ✅新增: 动态止盈状态追踪
+        self.best_profit_price: Optional[float] = None
     
     def on_board(self, board: Dict[str, Any]) -> None:
         if board.get("symbol") != self.cfg.board_symbol:
@@ -197,33 +206,64 @@ class KabuLiquidityTakerScalper:
         self.last_signal_time = now
     
     def _check_exit(self, now: datetime) -> None:
+        """✅修复: 支持动态止盈模式"""
         if self.position == 0 or not self.board or self.avg_price is None:
             return
-        
+
         best_bid = float(self.board.get("best_bid", 0))
         best_ask = float(self.board.get("best_ask", 0))
-        
+
         if best_bid <= 0 or best_ask <= 0:
             return
-        
+
         last_price = (best_bid + best_ask) / 2
         pnl_ticks = (last_price - self.avg_price) / self.cfg.tick_size
-        
-        # ✅修复:正确处理空头pnl
+
         if self.position < 0:
             pnl_ticks = -pnl_ticks
-        
+
         reason = None
-        if pnl_ticks >= self.cfg.take_profit_ticks:
-            reason = "take_profit"
-        elif pnl_ticks <= -self.cfg.stop_loss_ticks:
-            reason = "stop_loss"
-        elif (
-            self.entry_time
-            and (now - self.entry_time).total_seconds() >= self.cfg.time_stop_seconds
-        ):
-            reason = "time_stop"
-        
+
+        # ========== 模式1: 动态止盈 ==========
+        if self.cfg.enable_dynamic_exit:
+            # 更新最优价格
+            if self.best_profit_price is None:
+                self.best_profit_price = last_price
+            else:
+                if self.position > 0 and last_price > self.best_profit_price:
+                    self.best_profit_price = last_price
+                elif self.position < 0 and last_price < self.best_profit_price:
+                    self.best_profit_price = last_price
+
+            # 判断是否有盈利
+            has_profit = pnl_ticks >= self.cfg.dynamic_profit_threshold_ticks
+
+            if has_profit:
+                # 有盈利时，检查方向是否反转
+                if self.position > 0:
+                    reversal_ticks = (self.best_profit_price - last_price) / self.cfg.tick_size
+                else:
+                    reversal_ticks = (last_price - self.best_profit_price) / self.cfg.tick_size
+
+                if reversal_ticks >= self.cfg.dynamic_reversal_ticks:
+                    reason = "dynamic_exit_reversal"
+                    print(f"✅ {self.cfg.log_prefix} [动态止盈] 触发! 盈利={pnl_ticks:.1f}T, 回撤={reversal_ticks:.1f}T → 平仓")
+            else:
+                # 亏损时不止损，等待反转
+                logger.debug(f"{self.cfg.log_prefix} [动态止盈] 暂无盈利({pnl_ticks:.1f}T)，继续持有")
+
+        # ========== 模式2: 传统止盈止损 ==========
+        else:
+            if pnl_ticks >= self.cfg.take_profit_ticks:
+                reason = "take_profit"
+            elif pnl_ticks <= -self.cfg.stop_loss_ticks:
+                reason = "stop_loss"
+            elif (
+                self.entry_time
+                and (now - self.entry_time).total_seconds() >= self.cfg.time_stop_seconds
+            ):
+                reason = "time_stop"
+
         if reason:
             self._exit_position(reason)
     
@@ -278,11 +318,13 @@ class KabuLiquidityTakerScalper:
         if prev_pos == 0 and new_pos != 0:
             self.entry_time = datetime.now()
             self.avg_price = price
+            self.best_profit_price = None  # ✅重置动态止盈状态
         elif prev_pos != 0 and new_pos != 0 and prev_pos * new_pos > 0:
             self.avg_price = (self.avg_price * abs(prev_pos) + price * size) / abs(new_pos)
         elif prev_pos != 0 and new_pos == 0:
             self.entry_time = None
             self.avg_price = None
+            self.best_profit_price = None  # ✅重置动态止盈状态
         
         self.position = new_pos
         

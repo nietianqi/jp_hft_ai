@@ -20,28 +20,34 @@ class MarketMakingConfig:
     board_symbol: str
     tick_size: float = 0.1
     lot_size: int = 100
-    
+
     max_long_position: int = 100
     max_short_position: int = 0
     inventory_target: int = 0
     inventory_soft_limit: int = 100
-    
+
     base_spread_ticks: int = 2
     min_spread_ticks: int = 1
     max_spread_ticks: int = 6
-    
+
     vola_window_seconds: int = 10
     vola_to_spread_factor: float = 0.5
-    
+
     inventory_skew_factor_ticks: float = 1.0
-    
+
     quote_refresh_interval: float = 0.5
     price_change_requote_threshold_ticks: int = 1
-    
+
+    # 止盈止损配置
     take_profit_ticks: int = 2
     stop_loss_ticks: int = 100
     panic_spread_multiplier: float = 2.0
-    
+
+    # 移动止盈配置
+    enable_trailing_stop: bool = True           # 启用移动止盈
+    trailing_activation_ticks: int = 3          # 盈利3 ticks后启动移动止盈
+    trailing_distance_ticks: int = 2            # 从最高点回撤2 ticks触发止盈
+
     log_prefix: str = "[MM]"
 
 
@@ -58,20 +64,24 @@ class MarketMakingStrategy:
         self.gateway = gateway
         self.cfg = config
         self.meta = meta_manager
-        
+
         self.board: Optional[Dict[str, Any]] = None
         self.price_window: Deque[PricePoint] = deque()
-        
+
         self.position: int = 0
         self.avg_price: Optional[float] = None
-        
+
         self.bid_order_id: Optional[str] = None
         self.ask_order_id: Optional[str] = None
         self.current_bid_price: Optional[float] = None
         self.current_ask_price: Optional[float] = None
-        
+
         self.last_quote_time: Optional[datetime] = None
         self.entry_time: Optional[datetime] = None
+
+        # 移动止盈状态
+        self.best_profit_price: Optional[float] = None  # 记录最优价格
+        self.trailing_active: bool = False              # 移动止盈是否激活
     
     def on_board(self, board: Dict[str, Any]) -> None:
         if board.get("symbol") != self.cfg.board_symbol:
@@ -102,19 +112,63 @@ class MarketMakingStrategy:
         return std / self.cfg.tick_size
     
     def _check_exit(self, now: datetime, current_price: float) -> None:
+        """检查止盈止损 - 支持移动止盈"""
         if self.position == 0 or self.avg_price is None:
             return
-        
+
+        # 计算当前盈亏 (ticks)
         pnl_ticks = (current_price - self.avg_price) / self.cfg.tick_size
         if self.position < 0:
             pnl_ticks = -pnl_ticks
-        
+
         reason = None
-        if pnl_ticks >= self.cfg.take_profit_ticks:
-            reason = "take_profit"
-        elif pnl_ticks <= -self.cfg.stop_loss_ticks:
+
+        # 1. 止损检查 (优先级最高)
+        if pnl_ticks <= -self.cfg.stop_loss_ticks:
             reason = "stop_loss"
-        
+            logger.warning(f"{self.cfg.log_prefix} 触发止损! 亏损={pnl_ticks:.1f} ticks")
+
+        # 2. 移动止盈检查
+        elif self.cfg.enable_trailing_stop:
+            # 更新最优价格
+            if self.best_profit_price is None:
+                self.best_profit_price = current_price
+            else:
+                # 多头: 记录最高价
+                if self.position > 0 and current_price > self.best_profit_price:
+                    self.best_profit_price = current_price
+                    logger.info(f"{self.cfg.log_prefix} 更新最高价: {current_price:.1f} (盈利={pnl_ticks:.1f} ticks)")
+                # 空头: 记录最低价
+                elif self.position < 0 and current_price < self.best_profit_price:
+                    self.best_profit_price = current_price
+                    logger.info(f"{self.cfg.log_prefix} 更新最低价: {current_price:.1f} (盈利={pnl_ticks:.1f} ticks)")
+
+            # 检查是否激活移动止盈
+            if not self.trailing_active and pnl_ticks >= self.cfg.trailing_activation_ticks:
+                self.trailing_active = True
+                logger.info(f"{self.cfg.log_prefix} 移动止盈已激活! 盈利={pnl_ticks:.1f} ticks, 最优价={self.best_profit_price:.1f}")
+
+            # 如果已激活，检查回撤
+            if self.trailing_active:
+                # 计算从最优价格的回撤
+                if self.position > 0:
+                    # 多头: 从最高价回撤
+                    pullback_ticks = (self.best_profit_price - current_price) / self.cfg.tick_size
+                else:
+                    # 空头: 从最低价回撤
+                    pullback_ticks = (current_price - self.best_profit_price) / self.cfg.tick_size
+
+                if pullback_ticks >= self.cfg.trailing_distance_ticks:
+                    reason = "trailing_stop"
+                    logger.info(f"{self.cfg.log_prefix} 触发移动止盈! 回撤={pullback_ticks:.1f} ticks, "
+                               f"最优价={self.best_profit_price:.1f}, 当前价={current_price:.1f}")
+
+        # 3. 固定止盈检查 (移动止盈未激活时使用)
+        elif pnl_ticks >= self.cfg.take_profit_ticks:
+            reason = "take_profit"
+            logger.info(f"{self.cfg.log_prefix} 触发固定止盈! 盈利={pnl_ticks:.1f} ticks")
+
+        # 执行平仓
         if reason and self.board:
             self._exit_position(reason)
     
@@ -272,25 +326,36 @@ class MarketMakingStrategy:
     def on_fill(self, fill: Dict[str, Any]) -> None:
         if fill.get("symbol") != self.cfg.symbol:
             return
-        
+
         side = fill["side"]
         size = int(fill["size"]) if "size" in fill else int(fill["quantity"])
         price = float(fill["price"])
-        
+
         prev_pos = self.position
         new_pos = prev_pos + size if side == "BUY" else prev_pos - size
-        
+
         if prev_pos == 0 and new_pos != 0:
+            # 开仓
             self.avg_price = price
             self.entry_time = datetime.now()
+            # 重置移动止盈状态
+            self.best_profit_price = None
+            self.trailing_active = False
+            logger.info(f"{self.cfg.log_prefix} 开仓: {side} {size}@{price:.1f}")
         elif prev_pos * new_pos > 0:
+            # 加仓
             self.avg_price = (self.avg_price * abs(prev_pos) + price * size) / abs(new_pos)
         elif prev_pos != 0 and new_pos == 0:
+            # 平仓
             self.avg_price = None
             self.entry_time = None
-        
+            # 重置移动止盈状态
+            self.best_profit_price = None
+            self.trailing_active = False
+            logger.info(f"{self.cfg.log_prefix} 平仓完成")
+
         self.position = new_pos
-        
+
         if self.meta:
             from engine.meta_strategy_manager import StrategyType
             self.meta.on_fill(StrategyType.MARKET_MAKING, side, price, size)

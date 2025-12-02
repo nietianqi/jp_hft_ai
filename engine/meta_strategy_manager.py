@@ -20,6 +20,9 @@ class StrategyType(IntEnum):
     MARKET_MAKING = 0
     LIQUIDITY_TAKER = 1
     ORDER_FLOW = 2
+    MICRO_GRID = 3          # ✅新增: 微网格震荡剥头皮
+    SHORT_MOMENTUM = 4      # ✅新增: 短周期动量跟随
+    TAPE_READING = 5        # ✅新增: 盘口统计订单流
 
 
 @dataclass
@@ -39,10 +42,14 @@ class MetaStrategyConfig:
     
     def __post_init__(self):
         if self.strategy_weights is None:
+            # ✅新增: 6策略权重配置 (更分散风险)
             self.strategy_weights = {
-                StrategyType.MARKET_MAKING: 0.3,
-                StrategyType.LIQUIDITY_TAKER: 0.4,
-                StrategyType.ORDER_FLOW: 0.3,
+                StrategyType.MARKET_MAKING: 0.15,      # 做市 15%
+                StrategyType.LIQUIDITY_TAKER: 0.15,    # 流动性抢占 15%
+                StrategyType.ORDER_FLOW: 0.10,         # 订单流 10%
+                StrategyType.MICRO_GRID: 0.25,         # 微网格 25% (适合震荡市)
+                StrategyType.SHORT_MOMENTUM: 0.20,     # 短动量 20% (适合趋势)
+                StrategyType.TAPE_READING: 0.15,       # 盘口统计 15%
             }
 
 
@@ -74,6 +81,7 @@ class MetaStrategyManager:
     def __init__(self, config: MetaStrategyConfig):
         self.cfg = config
         
+        # ✅新增: 初始化6个策略状态
         self.strategies: Dict[StrategyType, StrategyState] = {
             StrategyType.MARKET_MAKING: StrategyState(
                 strategy_type=StrategyType.MARKET_MAKING,
@@ -86,6 +94,18 @@ class MetaStrategyManager:
             StrategyType.ORDER_FLOW: StrategyState(
                 strategy_type=StrategyType.ORDER_FLOW,
                 weight=config.strategy_weights[StrategyType.ORDER_FLOW],
+            ),
+            StrategyType.MICRO_GRID: StrategyState(
+                strategy_type=StrategyType.MICRO_GRID,
+                weight=config.strategy_weights[StrategyType.MICRO_GRID],
+            ),
+            StrategyType.SHORT_MOMENTUM: StrategyState(
+                strategy_type=StrategyType.SHORT_MOMENTUM,
+                weight=config.strategy_weights[StrategyType.SHORT_MOMENTUM],
+            ),
+            StrategyType.TAPE_READING: StrategyState(
+                strategy_type=StrategyType.TAPE_READING,
+                weight=config.strategy_weights[StrategyType.TAPE_READING],
             ),
         }
         

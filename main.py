@@ -22,8 +22,8 @@ class DummyGateway:
     def __init__(self):
         self.orders = {}
     
-    def send_order(self, symbol, side, price, qty, order_type="LIMIT"):
-        """✅修复:改为同步方法"""
+    def send_order(self, symbol, side, price, qty, order_type="LIMIT", strategy_type=None):
+        """✅修复:改为同步方法，添加策略类型标识"""
         import uuid
         order_id = str(uuid.uuid4())[:8]
         self.orders[order_id] = {
@@ -31,9 +31,11 @@ class DummyGateway:
             'side': side,
             'quantity': qty,
             'price': price,
-            'status': 'PENDING'
+            'status': 'PENDING',
+            'strategy_type': strategy_type  # ← 新增：记录订单来自哪个策略
         }
-        print(f"[网关] {side} {symbol}: {qty}股 @ {price:.1f} (订单ID: {order_id})")
+        strategy_name = strategy_type.name if strategy_type is not None else "UNKNOWN"
+        print(f"[网关][{strategy_name}] {side} {symbol}: {qty}股 @ {price:.1f} (订单ID: {order_id})")
         return order_id
     
     def cancel_order(self, order_id):
@@ -50,30 +52,36 @@ class DummyGateway:
         for order_id, order in list(self.orders.items()):
             if order['status'] != 'PENDING':
                 continue
-            
+
             if random.random() < 0.3:
                 if order['side'] == 'BUY' and current_price <= order['price']:
+                    strategy_type = order.get('strategy_type')
+                    strategy_name = strategy_type.name if strategy_type is not None else "UNKNOWN"
                     fills.append({
                         'order_id': order_id,
                         'symbol': order['symbol'],
                         'side': order['side'],
                         'quantity': order['quantity'],
-                        'price': order['price']
+                        'price': order['price'],
+                        'strategy_type': strategy_type  # ← 新增：成交回报包含策略类型
                     })
                     order['status'] = 'FILLED'
-                    print(f"[网关] 成交: {order_id} - BUY {order['quantity']}@{order['price']:.1f}")
-                
+                    print(f"[网关][{strategy_name}] 成交: {order_id} - BUY {order['quantity']}@{order['price']:.1f}")
+
                 elif order['side'] == 'SELL' and current_price >= order['price']:
+                    strategy_type = order.get('strategy_type')
+                    strategy_name = strategy_type.name if strategy_type is not None else "UNKNOWN"
                     fills.append({
                         'order_id': order_id,
                         'symbol': order['symbol'],
                         'side': order['side'],
                         'quantity': order['quantity'],
-                        'price': order['price']
+                        'price': order['price'],
+                        'strategy_type': strategy_type  # ← 新增：成交回报包含策略类型
                     })
                     order['status'] = 'FILLED'
-                    print(f"[网关] 成交: {order_id} - SELL {order['quantity']}@{order['price']:.1f}")
-        
+                    print(f"[网关][{strategy_name}] 成交: {order_id} - SELL {order['quantity']}@{order['price']:.1f}")
+
         return fills
 
 

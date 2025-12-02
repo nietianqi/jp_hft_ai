@@ -193,12 +193,14 @@ class MarketMakingStrategy:
             if not can_exec:
                 return
         
+        from engine.meta_strategy_manager import StrategyType
         oid = self.gateway.send_order(
             symbol=self.cfg.symbol,
             side=side,
             price=price,
             qty=qty,
             order_type="LIMIT",
+            strategy_type=StrategyType.MARKET_MAKING,  # ← 新增：标识订单来源
         )
     
     def _update_quotes(self, now: datetime) -> None:
@@ -302,12 +304,14 @@ class MarketMakingStrategy:
                 if not can_exec:
                     return
             
+            from engine.meta_strategy_manager import StrategyType
             new_order_id = self.gateway.send_order(
                 symbol=self.cfg.symbol,
                 side=side,
                 price=target_price,
                 qty=qty,
                 order_type="LIMIT",
+                strategy_type=StrategyType.MARKET_MAKING,  # ← 新增：标识订单来源
             )
             setattr(self, order_id_attr, new_order_id)
             setattr(self, price_attr, target_price)
@@ -326,6 +330,11 @@ class MarketMakingStrategy:
     def on_fill(self, fill: Dict[str, Any]) -> None:
         if fill.get("symbol") != self.cfg.symbol:
             return
+
+        # ← 新增：检查订单归属，只处理自己的订单
+        from engine.meta_strategy_manager import StrategyType
+        if fill.get("strategy_type") != StrategyType.MARKET_MAKING:
+            return  # 不是做市策略的订单，忽略
 
         side = fill["side"]
         size = int(fill["size"]) if "size" in fill else int(fill["quantity"])

@@ -163,8 +163,9 @@ class KabuLiquidityTakerScalper:
             price=price,
             qty=qty,
             order_type="LIMIT",
+            strategy_type=StrategyType.LIQUIDITY_TAKER,  # ← 新增：标识订单来源
         )
-        
+
         self.active_order_id = order_id
         self.last_signal_time = now
     
@@ -189,8 +190,9 @@ class KabuLiquidityTakerScalper:
             price=price,
             qty=qty,
             order_type="LIMIT",
+            strategy_type=StrategyType.LIQUIDITY_TAKER,  # ← 新增：标识订单来源
         )
-        
+
         self.active_order_id = order_id
         self.last_signal_time = now
     
@@ -252,14 +254,20 @@ class KabuLiquidityTakerScalper:
             price=price,
             qty=qty,
             order_type="LIMIT",
+            strategy_type=StrategyType.LIQUIDITY_TAKER,  # ← 新增：标识订单来源
         )
-        
+
         self.active_order_id = order_id
     
     def on_fill(self, fill: Dict[str, Any]) -> None:
         if fill.get("symbol") != self.cfg.symbol:
             return
-        
+
+        # ← 新增：检查订单归属，只处理自己的订单
+        from engine.meta_strategy_manager import StrategyType
+        if fill.get("strategy_type") != StrategyType.LIQUIDITY_TAKER:
+            return  # 不是流动性抢占策略的订单，忽略
+
         side = fill["side"]
         size = int(fill.get("size", fill.get("quantity", 0)))
         price = float(fill["price"])

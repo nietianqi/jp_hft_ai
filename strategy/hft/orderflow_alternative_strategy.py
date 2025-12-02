@@ -222,14 +222,16 @@ class OrderFlowAlternativeStrategy:
             if not can_exec:
                 return
         
+        from engine.meta_strategy_manager import StrategyType
         order_id = self.gateway.send_order(
             symbol=self.cfg.symbol,
             side="BUY",
             price=aggressive_price,
             qty=qty,
             order_type="LIMIT",
+            strategy_type=StrategyType.ORDER_FLOW,  # ← 新增：标识订单来源
         )
-        
+
         self.active_order_id = order_id
         self.last_signal_time = now
         
@@ -254,12 +256,14 @@ class OrderFlowAlternativeStrategy:
             if not can_exec:
                 return
         
+        from engine.meta_strategy_manager import StrategyType
         order_id = self.gateway.send_order(
             symbol=self.cfg.symbol,
             side="SELL",
             price=aggressive_price,
             qty=qty,
             order_type="LIMIT",
+            strategy_type=StrategyType.ORDER_FLOW,  # ← 新增：标识订单来源
         )
         
         self.active_order_id = order_id
@@ -312,19 +316,26 @@ class OrderFlowAlternativeStrategy:
             if not can_exec:
                 return
         
+        from engine.meta_strategy_manager import StrategyType
         order_id = self.gateway.send_order(
             symbol=self.cfg.symbol,
             side=side,
             price=price,
             qty=qty,
             order_type="LIMIT",
+            strategy_type=StrategyType.ORDER_FLOW,  # ← 新增：标识订单来源
         )
-        
+
         logger.info(f"{self.cfg.log_prefix} 平仓 {side} {qty}@{price:.1f}, reason={reason}")
     
     def on_fill(self, fill: Dict[str, Any]) -> None:
         if fill.get("symbol") != self.cfg.symbol:
             return
+
+        # ← 新增：检查订单归属，只处理自己的订单
+        from engine.meta_strategy_manager import StrategyType
+        if fill.get("strategy_type") != StrategyType.ORDER_FLOW:
+            return  # 不是订单流策略的订单，忽略
 
         side = fill["side"]
         size = int(fill.get("size", fill.get("quantity", 0)))

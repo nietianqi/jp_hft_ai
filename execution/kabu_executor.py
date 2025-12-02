@@ -252,8 +252,12 @@ class KabuOrderExecutor(OrderExecutor):
             except Exception as e:
                 return 'ERROR'
 
-    def send_order(self, symbol: str, side: str, price: float, qty: int, order_type: str = "LIMIT") -> Optional[str]:
-        """同步接口:发送订单(兼容策略调用) - 使用线程池处理"""
+    def send_order(self, symbol: str, side: str, price: float, qty: int, order_type: str = "LIMIT", strategy_type=None) -> Optional[str]:
+        """同步接口:发送订单(兼容策略调用) - 使用线程池处理
+
+        Args:
+            strategy_type: 策略类型标识(用于订单归属追踪)
+        """
         import asyncio
         import concurrent.futures
         import threading

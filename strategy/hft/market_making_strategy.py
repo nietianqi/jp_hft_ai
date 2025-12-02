@@ -43,7 +43,16 @@ class MarketMakingConfig:
     stop_loss_ticks: int = 100
     panic_spread_multiplier: float = 2.0
 
-    # 移动止盈配置
+    # ✅ 新增：动态止盈模式配置
+    enable_dynamic_exit: bool = True            # 启用动态止盈模式
+    # 动态止盈规则:
+    # 1. 有盈利时，方向不对(回撤)就平仓
+    # 2. 方向对时，不平仓，让利润奔跑
+    # 3. 亏损时，不止损，等待反转
+    dynamic_profit_threshold_ticks: float = 0.5  # 盈利阈值(大于此值才算有盈利)
+    dynamic_reversal_ticks: float = 0.3          # 方向反转阈值(回撤多少tick算反转)
+
+    # 移动止盈配置 (传统模式，当enable_dynamic_exit=False时使用)
     enable_trailing_stop: bool = True           # 启用移动止盈
     trailing_activation_ticks: int = 3          # 盈利3 ticks后启动移动止盈
     trailing_distance_ticks: int = 2            # 从最高点回撤2 ticks触发止盈
@@ -112,7 +121,7 @@ class MarketMakingStrategy:
         return std / self.cfg.tick_size
     
     def _check_exit(self, now: datetime, current_price: float) -> None:
-        """检查止盈止损 - 支持移动止盈"""
+        """检查止盈止损 - 支持动态止盈和移动止盈"""
         if self.position == 0 or self.avg_price is None:
             return
 
@@ -123,50 +132,90 @@ class MarketMakingStrategy:
 
         reason = None
 
-        # 1. 止损检查 (优先级最高)
-        if pnl_ticks <= -self.cfg.stop_loss_ticks:
-            reason = "stop_loss"
-            logger.warning(f"{self.cfg.log_prefix} 触发止损! 亏损={pnl_ticks:.1f} ticks")
-
-        # 2. 移动止盈检查
-        elif self.cfg.enable_trailing_stop:
-            # 更新最优价格
+        # ========== 模式1: 动态止盈 (推荐) ==========
+        if self.cfg.enable_dynamic_exit:
+            # 更新最优价格（用于追踪最高点/最低点）
             if self.best_profit_price is None:
                 self.best_profit_price = current_price
             else:
-                # 多头: 记录最高价
+                # 多头: 更新最高价
                 if self.position > 0 and current_price > self.best_profit_price:
                     self.best_profit_price = current_price
-                    logger.info(f"{self.cfg.log_prefix} 更新最高价: {current_price:.1f} (盈利={pnl_ticks:.1f} ticks)")
-                # 空头: 记录最低价
+                    logger.info(f"{self.cfg.log_prefix} [动态止盈] 更新最高价: {current_price:.1f} (盈利={pnl_ticks:.1f}T)")
+                # 空头: 更新最低价
                 elif self.position < 0 and current_price < self.best_profit_price:
                     self.best_profit_price = current_price
-                    logger.info(f"{self.cfg.log_prefix} 更新最低价: {current_price:.1f} (盈利={pnl_ticks:.1f} ticks)")
+                    logger.info(f"{self.cfg.log_prefix} [动态止盈] 更新最低价: {current_price:.1f} (盈利={pnl_ticks:.1f}T)")
 
-            # 检查是否激活移动止盈
-            if not self.trailing_active and pnl_ticks >= self.cfg.trailing_activation_ticks:
-                self.trailing_active = True
-                logger.info(f"{self.cfg.log_prefix} 移动止盈已激活! 盈利={pnl_ticks:.1f} ticks, 最优价={self.best_profit_price:.1f}")
+            # 规则1: 判断是否有盈利
+            has_profit = pnl_ticks >= self.cfg.dynamic_profit_threshold_ticks
 
-            # 如果已激活，检查回撤
-            if self.trailing_active:
-                # 计算从最优价格的回撤
+            if has_profit:
+                # 规则2: 有盈利时，检查方向是否反转
                 if self.position > 0:
-                    # 多头: 从最高价回撤
-                    pullback_ticks = (self.best_profit_price - current_price) / self.cfg.tick_size
+                    # 多头: 从最高点回撤
+                    reversal_ticks = (self.best_profit_price - current_price) / self.cfg.tick_size
                 else:
-                    # 空头: 从最低价回撤
-                    pullback_ticks = (current_price - self.best_profit_price) / self.cfg.tick_size
+                    # 空头: 从最低点回撤
+                    reversal_ticks = (current_price - self.best_profit_price) / self.cfg.tick_size
 
-                if pullback_ticks >= self.cfg.trailing_distance_ticks:
-                    reason = "trailing_stop"
-                    logger.info(f"{self.cfg.log_prefix} 触发移动止盈! 回撤={pullback_ticks:.1f} ticks, "
-                               f"最优价={self.best_profit_price:.1f}, 当前价={current_price:.1f}")
+                # 方向不对(回撤) → 平仓止盈
+                if reversal_ticks >= self.cfg.dynamic_reversal_ticks:
+                    reason = "dynamic_exit_reversal"
+                    logger.info(f"{self.cfg.log_prefix} [动态止盈] 方向反转! 盈利={pnl_ticks:.1f}T, 回撤={reversal_ticks:.1f}T → 平仓")
+                else:
+                    # 方向正确 → 继续持有
+                    logger.debug(f"{self.cfg.log_prefix} [动态止盈] 方向正确，持有 (盈利={pnl_ticks:.1f}T, 回撤={reversal_ticks:.1f}T)")
+            else:
+                # 规则3: 亏损时不止损，等待反转
+                logger.debug(f"{self.cfg.log_prefix} [动态止盈] 暂无盈利({pnl_ticks:.1f}T)，继续持有等反转")
 
-        # 3. 固定止盈检查 (移动止盈未激活时使用)
-        elif pnl_ticks >= self.cfg.take_profit_ticks:
-            reason = "take_profit"
-            logger.info(f"{self.cfg.log_prefix} 触发固定止盈! 盈利={pnl_ticks:.1f} ticks")
+        # ========== 模式2: 传统止盈止损 ==========
+        else:
+            # 1. 止损检查 (优先级最高)
+            if pnl_ticks <= -self.cfg.stop_loss_ticks:
+                reason = "stop_loss"
+                logger.warning(f"{self.cfg.log_prefix} 触发止损! 亏损={pnl_ticks:.1f} ticks")
+
+            # 2. 移动止盈检查
+            elif self.cfg.enable_trailing_stop:
+                # 更新最优价格
+                if self.best_profit_price is None:
+                    self.best_profit_price = current_price
+                else:
+                    # 多头: 记录最高价
+                    if self.position > 0 and current_price > self.best_profit_price:
+                        self.best_profit_price = current_price
+                        logger.info(f"{self.cfg.log_prefix} 更新最高价: {current_price:.1f} (盈利={pnl_ticks:.1f} ticks)")
+                    # 空头: 记录最低价
+                    elif self.position < 0 and current_price < self.best_profit_price:
+                        self.best_profit_price = current_price
+                        logger.info(f"{self.cfg.log_prefix} 更新最低价: {current_price:.1f} (盈利={pnl_ticks:.1f} ticks)")
+
+                # 检查是否激活移动止盈
+                if not self.trailing_active and pnl_ticks >= self.cfg.trailing_activation_ticks:
+                    self.trailing_active = True
+                    logger.info(f"{self.cfg.log_prefix} 移动止盈已激活! 盈利={pnl_ticks:.1f} ticks, 最优价={self.best_profit_price:.1f}")
+
+                # 如果已激活，检查回撤
+                if self.trailing_active:
+                    # 计算从最优价格的回撤
+                    if self.position > 0:
+                        # 多头: 从最高价回撤
+                        pullback_ticks = (self.best_profit_price - current_price) / self.cfg.tick_size
+                    else:
+                        # 空头: 从最低价回撤
+                        pullback_ticks = (current_price - self.best_profit_price) / self.cfg.tick_size
+
+                    if pullback_ticks >= self.cfg.trailing_distance_ticks:
+                        reason = "trailing_stop"
+                        logger.info(f"{self.cfg.log_prefix} 触发移动止盈! 回撤={pullback_ticks:.1f} ticks, "
+                                   f"最优价={self.best_profit_price:.1f}, 当前价={current_price:.1f}")
+
+            # 3. 固定止盈检查 (移动止盈未激活时使用)
+            elif pnl_ticks >= self.cfg.take_profit_ticks:
+                reason = "take_profit"
+                logger.info(f"{self.cfg.log_prefix} 触发固定止盈! 盈利={pnl_ticks:.1f} ticks")
 
         # 执行平仓
         if reason and self.board:

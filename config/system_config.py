@@ -16,4 +16,4 @@ class SystemConfig:
     
     def __post_init__(self):
         if self.SYMBOLS is None:
-            self.SYMBOLS = ["4680"]
+            self.SYMBOLS = ["6425"]

@@ -59,6 +59,6 @@ class DualEngineConfig:
 @dataclass
 class StrategyConfig:
     """策略模式配置 - 支持HFT和双引擎两种模式"""
-    mode: str = 'hft'  # 'hft' 或 'dual_engine'
+    mode: str = 'dual_engine'  # 'hft' 或 'dual_engine'
     hft: HFTConfig = field(default_factory=HFTConfig)
     dual_engine: DualEngineConfig = field(default_factory=DualEngineConfig)

@@ -86,10 +86,21 @@ mode: str = 'dual_engine'  # 切换到双引擎策略
 
 ## ⚡ 快速开始
 
+### 模拟测试（推荐先测试）
+
 ```bash
-# 运行模拟测试
+# 使用随机数据测试策略逻辑，不连接真实API
 python main.py
 ```
+
+### 真实交易（⚠️ 谨慎操作）
+
+```bash
+# 连接Kabu API进行真实交易
+python main_kabu.py
+```
+
+**⚠️ 真实交易前必读：** [真实交易部署指南](./docs/REAL_TRADING_GUIDE.md)
 
 ## 📦 项目结构
 
@@ -110,13 +121,16 @@ jp_hft_fixed/
 ├── docs/                    # ✅新增完整文档
 │   ├── QUICK_START.md       # 快速开始
 │   ├── STRATEGY_GUIDE.md    # 策略使用指南
-│   └── IMPLEMENTATION_SUMMARY.md  # 技术实现总结
+│   ├── IMPLEMENTATION_SUMMARY.md  # 技术实现总结
+│   ├── EXIT_LOGIC.md        # 止盈与网格卖出逻辑说明
+│   └── REAL_TRADING_GUIDE.md # ⚠️ 真实交易部署指南
 ├── execution/               # 订单执行
 │   └── kabu_executor.py     # ✅已修复
 ├── utils/                   # 工具
 │   └── kabu_data_converter_fixed.py  # ✅关键修复
 ├── integrated_trading_system.py  # ✅已修复
-└── main.py                  # ✅已修复
+├── main.py                  # ✅模拟测试脚本
+└── main_kabu.py             # ⚠️ 真实交易脚本
 ```
 
 ## 🔧 配置参数
@@ -151,24 +165,51 @@ jp_hft_fixed/
 
 ## 🚀 部署流程
 
-### 阶段1: 模拟测试 (当前)
+### 阶段1: 模拟测试（当前）
+
 ```bash
+# 使用随机数据测试策略逻辑
 python main.py
 ```
 
-### 阶段2: 接入真实API
+**用途：**
+- ✅ 验证策略逻辑是否正确
+- ✅ 测试持仓控制是否有效
+- ✅ 观察信号生成是否合理
+- ✅ **不会连接真实API，安全测试**
 
-1. 修改`config/system_config.py`:
-```python
-API_PASSWORD: str = "your_real_password"
-```
+---
 
-2. 在`integrated_trading_system.py`中替换DummyGateway为真实executor
+### 阶段2: 真实交易（⚠️ 谨慎）
 
-3. **必须从小仓位开始**:
-```python
-max_total_position = 100  # 先用100股测试
-```
+**详细步骤见：** [真实交易部署指南](./docs/REAL_TRADING_GUIDE.md)
+
+#### 快速步骤：
+
+1. **配置Kabu API密码** - 编辑 `config/system_config.py`:
+   ```python
+   API_PASSWORD: str = "your_real_password"  # 改为真实密码
+   ```
+
+2. **调整为小仓位测试** - 编辑 `config/strategy_config.py`:
+   ```python
+   # 双引擎模式
+   core_pos: int = 100        # 从100股开始测试
+   max_pos: int = 200
+
+   # 或 HFT模式
+   max_total_position = 100   # 从100股开始测试
+   daily_loss_limit = 10_000  # 严格限制亏损
+   ```
+
+3. **启动Kabu Station** - 确保API功能已启用
+
+4. **运行真实交易**:
+   ```bash
+   python main_kabu.py
+   ```
+
+5. **监控运行** - 观察日志和持仓，确保一切正常
 
 ## ⚠️ 风险警告
 

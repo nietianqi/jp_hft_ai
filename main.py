@@ -93,36 +93,130 @@ async def main():
     
     system_config = SystemConfig()
     trading_config = TradingConfig()
-    strategy_config = StrategyConfig(mode='hft')
-    
-    print(f"模式: HFT三策略系统")
-    print(f"标的: {system_config.SYMBOLS[0]}")
-    
-    hft_cfg = strategy_config.hft
-    print(f"配置:")
-    print(f"  最大仓位: {hft_cfg.max_total_position} 股")
-    print(f"  止盈/止损: {hft_cfg.take_profit_ticks}/{hft_cfg.stop_loss_ticks} ticks")
-    print(f"  日亏损限额: {hft_cfg.daily_loss_limit:,.0f} 日元")
-    print(f"  策略权重: 做市{hft_cfg.strategy_weights['market_making']:.0%} + "
-          f"流动性{hft_cfg.strategy_weights['liquidity_taker']:.0%} + "
-          f"订单流{hft_cfg.strategy_weights['orderflow_queue']:.0%}")
+    strategy_config = StrategyConfig()  # ✅ Use mode from config file
+
+    # Display current mode
+    if strategy_config.mode == 'hft':
+        print(f"模式: HFT三策略系统")
+        print(f"标的: {system_config.SYMBOLS[0]}")
+
+        hft_cfg = strategy_config.hft
+        print(f"配置:")
+        print(f"  最大仓位: {hft_cfg.max_total_position} 股")
+        print(f"  止盈/止损: {hft_cfg.take_profit_ticks}/{hft_cfg.stop_loss_ticks} ticks")
+        print(f"  日亏损限额: {hft_cfg.daily_loss_limit:,.0f} 日元")
+        print(f"  策略权重: 做市{hft_cfg.strategy_weights['market_making']:.0%} + "
+              f"流动性{hft_cfg.strategy_weights['liquidity_taker']:.0%} + "
+              f"订单流{hft_cfg.strategy_weights['orderflow_queue']:.0%}")
+    else:  # dual_engine
+        print(f"模式: 双引擎网格策略")
+        print(f"标的: {system_config.SYMBOLS[0]}")
+
+        de_cfg = strategy_config.dual_engine
+        print(f"配置:")
+        print(f"  核心仓位: {de_cfg.core_pos} 股")
+        print(f"  最大仓位: {de_cfg.max_pos} 股")
+        print(f"  网格步长: {de_cfg.grid_step_pct}%")
+        print(f"  动态止盈: {'启用' if de_cfg.enable_dynamic_exit else '禁用'}")
     print("=" * 80)
-    
+
     try:
-        from integrated_trading_system import IntegratedTradingSystem
-        
         gateway = DummyGateway()
-        system = IntegratedTradingSystem(
-            gateway=gateway,
-            symbol=system_config.SYMBOLS[0],
-            tick_size=0.1,
-        )
-        
-        system.meta_manager.cfg.total_capital = hft_cfg.total_capital
-        system.meta_manager.cfg.max_total_position = hft_cfg.max_total_position
-        system.meta_manager.cfg.daily_loss_limit = hft_cfg.daily_loss_limit
-        
-        print("\n✓ HFT系统初始化成功")
+
+        # Initialize system based on mode
+        if strategy_config.mode == 'hft':
+            from integrated_trading_system import IntegratedTradingSystem
+
+            system = IntegratedTradingSystem(
+                gateway=gateway,
+                symbol=system_config.SYMBOLS[0],
+                tick_size=0.1,
+            )
+
+            hft_cfg = strategy_config.hft
+            system.meta_manager.cfg.total_capital = hft_cfg.total_capital
+            system.meta_manager.cfg.max_total_position = hft_cfg.max_total_position
+            system.meta_manager.cfg.daily_loss_limit = hft_cfg.daily_loss_limit
+
+            print("\n✓ HFT系统初始化成功")
+        else:  # dual_engine
+            from strategy.original.dual_engine_strategy import DualEngineTradingStrategy
+            from models.market_data import MarketTick
+
+            de_cfg = strategy_config.dual_engine
+            strategy = DualEngineTradingStrategy(config=de_cfg)
+
+            # Simple position tracker for dual-engine
+            class DualEngineSystem:
+                def __init__(self, strategy, symbol):
+                    self.strategy = strategy
+                    self.symbol = symbol
+                    self.position = 0
+                    self.avg_cost = 0.0
+                    self.total_pnl = 0.0
+                    self.trades = []
+
+                def on_board(self, board):
+                    """Process market data"""
+                    tick = MarketTick(
+                        symbol=board['symbol'],
+                        timestamp_ns=int(board['timestamp'].timestamp() * 1e9),
+                        last_price=board['last_price'],
+                        bid_price=board['best_bid'],
+                        ask_price=board['best_ask'],
+                        volume=board.get('trading_volume', 0),
+                        bid_size=board['bids'][0][1] if board['bids'] else 0,
+                        ask_size=board['asks'][0][1] if board['asks'] else 0,
+                    )
+
+                    self.strategy.update_indicators(tick)
+                    signal = self.strategy.generate_signal(tick)
+
+                    if signal:
+                        self._execute_signal(signal, tick.last_price)
+
+                def _execute_signal(self, signal, price):
+                    """Execute trading signal"""
+                    qty = signal.quantity
+                    reason_map = {1: 'core', 2: 'grid_buy', 3: 'grid_sell',
+                                  4: 'exit', 5: 'trailing', 6: 'profit'}
+                    reason = reason_map.get(signal.reason_code, f'code_{signal.reason_code}')
+
+                    if signal.action == 0:  # BUY
+                        cost = self.position * self.avg_cost + qty * price
+                        self.position += qty
+                        self.avg_cost = cost / self.position if self.position > 0 else 0
+                        self.trades.append(('BUY', qty, price, reason))
+                        print(f"[{reason}] BUY {qty}股 @ {price:.2f} (持仓={self.position})")
+
+                        # ✅ 关键：通知策略持仓变化
+                        self.strategy.on_fill(self.symbol, "BUY", price, qty)
+
+                    elif signal.action == 1:  # SELL
+                        if self.position >= qty:
+                            pnl = (price - self.avg_cost) * qty
+                            self.total_pnl += pnl
+                            self.position -= qty
+                            self.trades.append(('SELL', qty, price, reason, pnl))
+                            print(f"[{reason}] SELL {qty}股 @ {price:.2f} (持仓={self.position}, 盈亏={pnl:.0f})")
+
+                            # ✅ 关键：通知策略持仓变化
+                            self.strategy.on_fill(self.symbol, "SELL", price, qty)
+
+                def print_status(self):
+                    """Print system status"""
+                    status = self.strategy.get_strategy_status(self.symbol)
+                    print(f"\n双引擎策略状态:")
+                    print(f"  持仓: {self.position} 股")
+                    print(f"  成本价: {self.avg_cost:.2f}")
+                    print(f"  累计盈亏: {self.total_pnl:.0f} JPY")
+                    print(f"  趋势状态: {'震荡上行✓' if status.get('trend_up') else '趋势失效✗'}")
+                    print(f"  网格中心: {status.get('grid_center', 0):.2f}")
+                    print(f"  网格层数: {status.get('active_grid_levels', 0)}")
+
+            system = DualEngineSystem(strategy, system_config.SYMBOLS[0])
+            print("\n✓ 双引擎策略初始化成功")
+
         print("\n开始模拟测试...\n")
         
         base_price = 1000.0
@@ -151,11 +245,13 @@ async def main():
             
             system.on_board(board)
             tick_count += 1
-            
-            fills = gateway.simulate_fills(base_price)
-            for fill in fills:
-                system.on_fill(fill)
-            
+
+            # HFT mode needs fill simulation
+            if strategy_config.mode == 'hft':
+                fills = gateway.simulate_fills(base_price)
+                for fill in fills:
+                    system.on_fill(fill)
+
             await asyncio.sleep(0.01)
             
             if (i + 1) % 100 == 0:

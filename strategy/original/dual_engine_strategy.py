@@ -194,8 +194,13 @@ class DualEngineTradingStrategy(TradingStrategy):
         生成交易信号
 
         双引擎逻辑：
-        1. 趋势引擎：判断是否应持有核心仓
-        2. 网格引擎：在趋势成立时生成网格买卖信号
+        1. 优先级1：止盈检查（平掉现有持仓）
+        2. 优先级2：趋势引擎（判断是否应持有核心仓）
+        3. 优先级3：网格引擎（在趋势成立时生成网格买卖信号）
+
+        注意：
+        - 止盈是平仓操作，卖出全部持仓
+        - 网格卖出是减仓操作，只卖出一格
         """
         symbol = tick.symbol
         if symbol not in self.symbol_states:
@@ -207,21 +212,22 @@ class DualEngineTradingStrategy(TradingStrategy):
         if len(st.prices) < max(self.cfg.ema_slow_window, self.rsi_period) + 2:
             return None
 
-        # 检查止盈条件
-        exit_signal = self._check_exit_conditions(tick, st)
-        if exit_signal:
-            return exit_signal
+        # ✅ 优先级1: 检查止盈条件（只在有持仓时检查）
+        if st.position > 0:
+            exit_signal = self._check_exit_conditions(tick, st)
+            if exit_signal:
+                return exit_signal
 
-        # 趋势失效：不生成新信号
+        # ✅ 优先级2: 趋势失效时不开新仓
         if not st.trend_up:
             return None
 
-        # 核心仓引擎：检查是否需要补仓到核心仓位
+        # ✅ 优先级3: 核心仓引擎（补仓到核心仓位）
         core_signal = self._check_core_position(tick, st)
         if core_signal:
             return core_signal
 
-        # 网格引擎：生成网格信号
+        # ✅ 优先级4: 网格引擎（生成网格买卖信号）
         grid_signal = self._check_grid_signal(tick, st)
         if grid_signal:
             return grid_signal
@@ -417,7 +423,7 @@ class DualEngineTradingStrategy(TradingStrategy):
             price=tick.last_price,
             quantity=buy_volume,
             confidence=0.8,
-            reason="core_position"
+            reason_code=1  # core_position
         )
 
         logger.info(
@@ -502,13 +508,14 @@ class DualEngineTradingStrategy(TradingStrategy):
                 price=price,
                 quantity=self.cfg.grid_volume,
                 confidence=0.6,
-                reason=f"grid_buy_L{grid_idx}"
+                reason_code=2  # grid_buy
             )
 
             return signal
 
         else:
             # 价格高于中心 → 考虑卖出
+            # ⚠️ 注意：这是网格减仓，只卖一格，不是止盈平仓
             if st.position < self.cfg.grid_volume:
                 return None
 
@@ -525,13 +532,19 @@ class DualEngineTradingStrategy(TradingStrategy):
             if abs(price - sell_price) / price > step * 0.5:
                 return None
 
+            # ✅ 网格卖出：只卖一格（减仓），不是平仓
             signal = TradingSignal(
                 symbol=tick.symbol,
                 action=1,  # SELL
                 price=price,
-                quantity=self.cfg.grid_volume,
+                quantity=self.cfg.grid_volume,  # ✅ 只卖一格，不是全部
                 confidence=0.6,
-                reason=f"grid_sell_L{grid_idx}"
+                reason_code=3  # grid_sell
+            )
+
+            logger.debug(
+                f"[DualEngine][Grid] 网格减仓信号：卖出 {self.cfg.grid_volume} 股 "
+                f"(持仓 {st.position}), 价格={price:.2f}, 最低卖价={min_sell_price:.2f}"
             )
 
             return signal
@@ -590,19 +603,20 @@ class DualEngineTradingStrategy(TradingStrategy):
         reversal_ticks = (st.best_profit_price - price) / self.cfg.pricetick
 
         if reversal_ticks >= self.cfg.dynamic_reversal_ticks:
-            # 方向反转 → 平仓
+            # ✅ 方向反转 → 平仓止盈（卖出全部持仓）
             signal = TradingSignal(
                 symbol=tick.symbol,
                 action=1,  # SELL
                 price=price,
-                quantity=st.position,
+                quantity=st.position,  # ✅ 关键：卖出全部持仓，不是一格
                 confidence=0.9,
-                reason=f"dynamic_exit_reversal(profit={pnl_ticks:.1f}T,reversal={reversal_ticks:.1f}T)"
+                reason_code=4  # dynamic_exit
             )
 
             logger.info(
-                f"[DualEngine][Exit] 动态止盈触发：profit={pnl_ticks:.1f}T, "
-                f"reversal={reversal_ticks:.1f}T"
+                f"[DualEngine][Exit] 动态止盈触发：平仓 {st.position} 股, "
+                f"profit={pnl_ticks:.1f}T, reversal={reversal_ticks:.1f}T, "
+                f"cost={st.avg_cost_price:.2f}, price={price:.2f}"
             )
 
             return signal
@@ -637,17 +651,20 @@ class DualEngineTradingStrategy(TradingStrategy):
                 pullback_ticks = (st.best_profit_price - price) / self.cfg.pricetick
 
                 if pullback_ticks >= self.cfg.trailing_distance_ticks:
+                    # ✅ 移动止盈 → 平仓全部持仓
                     signal = TradingSignal(
                         symbol=tick.symbol,
                         action=1,  # SELL
                         price=price,
-                        quantity=st.position,
+                        quantity=st.position,  # ✅ 关键：卖出全部持仓
                         confidence=0.9,
-                        reason=f"trailing_stop(pullback={pullback_ticks:.1f}T)"
+                        reason_code=5  # trailing_stop
                     )
 
                     logger.info(
-                        f"[DualEngine][Exit] 移动止盈触发：pullback={pullback_ticks:.1f}T"
+                        f"[DualEngine][Exit] 移动止盈触发：平仓 {st.position} 股, "
+                        f"pullback={pullback_ticks:.1f}T, best={st.best_profit_price:.2f}, "
+                        f"current={price:.2f}"
                     )
 
                     return signal
@@ -656,17 +673,20 @@ class DualEngineTradingStrategy(TradingStrategy):
         profit_threshold = self.cfg.profit_take_pct / 100.0 * st.avg_cost_price / self.cfg.pricetick
 
         if pnl_ticks >= profit_threshold:
+            # ✅ 固定止盈 → 平仓全部持仓
             signal = TradingSignal(
                 symbol=tick.symbol,
                 action=1,  # SELL
                 price=price,
-                quantity=st.position,
+                quantity=st.position,  # ✅ 关键：卖出全部持仓
                 confidence=0.9,
-                reason=f"take_profit({pnl_ticks:.1f}T)"
+                reason_code=6  # take_profit
             )
 
             logger.info(
-                f"[DualEngine][Exit] 固定止盈触发：profit={pnl_ticks:.1f}T"
+                f"[DualEngine][Exit] 固定止盈触发：平仓 {st.position} 股, "
+                f"profit={pnl_ticks:.1f}T, cost={st.avg_cost_price:.2f}, "
+                f"price={price:.2f}"
             )
 
             return signal

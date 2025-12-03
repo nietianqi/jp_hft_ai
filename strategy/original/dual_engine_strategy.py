@@ -423,7 +423,7 @@ class DualEngineTradingStrategy(TradingStrategy):
             price=tick.last_price,
             quantity=buy_volume,
             confidence=0.8,
-            reason="core_position"
+            reason_code=1  # core_position
         )
 
         logger.info(
@@ -508,7 +508,7 @@ class DualEngineTradingStrategy(TradingStrategy):
                 price=price,
                 quantity=self.cfg.grid_volume,
                 confidence=0.6,
-                reason=f"grid_buy_L{grid_idx}"
+                reason_code=2  # grid_buy
             )
 
             return signal
@@ -539,7 +539,7 @@ class DualEngineTradingStrategy(TradingStrategy):
                 price=price,
                 quantity=self.cfg.grid_volume,  # ✅ 只卖一格，不是全部
                 confidence=0.6,
-                reason=f"grid_sell_L{grid_idx}"
+                reason_code=3  # grid_sell
             )
 
             logger.debug(
@@ -610,7 +610,7 @@ class DualEngineTradingStrategy(TradingStrategy):
                 price=price,
                 quantity=st.position,  # ✅ 关键：卖出全部持仓，不是一格
                 confidence=0.9,
-                reason=f"dynamic_exit_reversal(profit={pnl_ticks:.1f}T,reversal={reversal_ticks:.1f}T)"
+                reason_code=4  # dynamic_exit
             )
 
             logger.info(
@@ -658,7 +658,7 @@ class DualEngineTradingStrategy(TradingStrategy):
                         price=price,
                         quantity=st.position,  # ✅ 关键：卖出全部持仓
                         confidence=0.9,
-                        reason=f"trailing_stop(pullback={pullback_ticks:.1f}T)"
+                        reason_code=5  # trailing_stop
                     )
 
                     logger.info(
@@ -680,7 +680,7 @@ class DualEngineTradingStrategy(TradingStrategy):
                 price=price,
                 quantity=st.position,  # ✅ 关键：卖出全部持仓
                 confidence=0.9,
-                reason=f"take_profit({pnl_ticks:.1f}T)"
+                reason_code=6  # take_profit
             )
 
             logger.info(

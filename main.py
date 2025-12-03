@@ -189,6 +189,9 @@ async def main():
                         self.trades.append(('BUY', qty, price, reason))
                         print(f"[{reason}] BUY {qty}股 @ {price:.2f} (持仓={self.position})")
 
+                        # ✅ 关键：通知策略持仓变化
+                        self.strategy.on_fill(self.symbol, "BUY", price, qty)
+
                     elif signal.action == 1:  # SELL
                         if self.position >= qty:
                             pnl = (price - self.avg_cost) * qty
@@ -196,6 +199,9 @@ async def main():
                             self.position -= qty
                             self.trades.append(('SELL', qty, price, reason, pnl))
                             print(f"[{reason}] SELL {qty}股 @ {price:.2f} (持仓={self.position}, 盈亏={pnl:.0f})")
+
+                            # ✅ 关键：通知策略持仓变化
+                            self.strategy.on_fill(self.symbol, "SELL", price, qty)
 
                 def print_status(self):
                     """Print system status"""

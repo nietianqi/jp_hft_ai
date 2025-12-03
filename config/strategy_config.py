@@ -28,8 +28,8 @@ class DualEngineConfig:
     ema_slow_window: int = 60
 
     # 核心仓位参数
-    core_pos: int = 1000                 # 核心仓目标（股数）
-    max_pos: int = 2000                  # 最大多头仓位
+    core_pos: int = 100                 # 核心仓目标（股数）
+    max_pos: int =    500               # 最大多头仓位
 
     # 网格参数
     grid_levels: int = 3                 # 网格层数（上下各几层）

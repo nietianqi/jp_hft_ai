@@ -1,6 +1,53 @@
-# Kabu HFT交易系统 - 修复版
+# Kabu 量化交易系统 - 双策略版本
 
-## 🚨 重要修复
+## 🎯 系统概述
+
+本系统支持**两种交易策略模式**，可灵活切换:
+
+1. **HFT 高频交易策略组** - 适合日内高频剥头皮
+2. **双引擎网格策略** - 适合震荡上行的趋势+网格交易
+
+---
+
+## 🆕 v2.0 新增功能
+
+### ✅ 双引擎网格策略 (NEW!)
+
+**核心特点:**
+- 🎯 **趋势引擎**: EMA20/EMA60双均线判断震荡上行
+- 📊 **核心仓位**: 趋势成立时持有核心仓，趋势失效只撤单不平仓
+- 🕸️ **微网格**: 在趋势成立时维护动态网格，价格爬坡自动重建
+- 💰 **成本价跟踪**: 精确记录平均成本，卖单只在盈利时执行
+- 🚀 **动态止盈**: 方向对不平仓，方向反转才止盈，让利润奔跑
+- 💸 **手续费过滤**: 自动跳过无利润网格，避免"赚价差亏手续费"
+
+**适用场景:**
+- 震荡上行市场
+- 趋势性行情
+- 降低交易频率
+- 减少手续费成本
+
+**快速开始:**
+```python
+# 编辑 config/strategy_config.py
+mode: str = 'dual_engine'  # 切换到双引擎策略
+```
+
+详细文档: [双引擎策略使用指南](./docs/STRATEGY_GUIDE.md)
+
+---
+
+## 📖 文档导航
+
+| 文档 | 内容 | 适合人群 |
+|------|------|----------|
+| [QUICK_START.md](./docs/QUICK_START.md) | 5分钟快速切换策略 | 所有用户 |
+| [STRATEGY_GUIDE.md](./docs/STRATEGY_GUIDE.md) | 完整策略使用指南 | 进阶用户 |
+| [IMPLEMENTATION_SUMMARY.md](./docs/IMPLEMENTATION_SUMMARY.md) | 技术实现细节 | 开发者 |
+
+---
+
+## 🚨 重要修复（HFT策略相关）
 
 此版本包含以下关键修复:
 
@@ -49,11 +96,21 @@ python main.py
 ```
 jp_hft_fixed/
 ├── config/                  # 配置模块
+│   └── strategy_config.py   # ✅策略模式切换配置
 ├── engine/                  # 元策略管理器
-├── strategy/hft/            # HFT策略
-│   ├── market_making_strategy.py
-│   ├── liquidity_taker_scalper.py
-│   └── orderflow_alternative_strategy.py  # ✅新策略
+│   └── meta_strategy_manager.py
+├── strategy/
+│   ├── hft/                 # HFT高频策略组
+│   │   ├── market_making_strategy.py
+│   │   ├── liquidity_taker_scalper.py
+│   │   └── orderflow_alternative_strategy.py
+│   └── original/            # 双引擎策略
+│       ├── enhanced_long_strategy.py      # 原震荡上行策略
+│       └── dual_engine_strategy.py        # ✅新增双引擎策略
+├── docs/                    # ✅新增完整文档
+│   ├── QUICK_START.md       # 快速开始
+│   ├── STRATEGY_GUIDE.md    # 策略使用指南
+│   └── IMPLEMENTATION_SUMMARY.md  # 技术实现总结
 ├── execution/               # 订单执行
 │   └── kabu_executor.py     # ✅已修复
 ├── utils/                   # 工具
@@ -64,17 +121,33 @@ jp_hft_fixed/
 
 ## 🔧 配置参数
 
-| 参数 | 数值 |
-|------|------|
-| 总仓位 | 400股 |
-| 止盈 | 2 tick |
-| 止损 | 100 tick |
-| 日亏损限额 | 50万日元 |
+### HFT 高频策略配置
 
-### 策略权重
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| max_total_position | 400股 | 最大总仓位 |
+| take_profit_ticks | 2 | 止盈跳数 |
+| stop_loss_ticks | 100 | 止损跳数 |
+| daily_loss_limit | 50万日元 | 日亏损限额 |
+
+**策略权重:**
 - 做市: 30%
 - 流动性抢占: 40%
 - 订单流: 30%
+
+### 双引擎策略配置
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| ema_fast_window | 20 | 快速EMA周期 |
+| ema_slow_window | 60 | 慢速EMA周期 |
+| core_pos | 1000股 | 核心仓位目标 |
+| max_pos | 2000股 | 最大仓位 |
+| grid_levels | 3 | 网格层数 |
+| grid_step_pct | 0.3% | 网格步长 |
+| enable_dynamic_exit | True | 启用动态止盈 |
+
+详细配置说明见 [策略使用指南](./docs/STRATEGY_GUIDE.md)
 
 ## 🚀 部署流程
 

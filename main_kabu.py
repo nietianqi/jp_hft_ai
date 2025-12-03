@@ -18,7 +18,7 @@ from config.system_config import SystemConfig
 from config.trading_config import TradingConfig
 from config.strategy_config import StrategyConfig
 from market.kabu_feed import KabuMarketFeed
-from execution.kabu_executor import KabuExecutor
+from execution.kabu_executor import KabuOrderExecutor
 from models.market_data import MarketTick
 
 # 配置日志
@@ -50,7 +50,7 @@ async def main():
         print(f"\n模式: HFT三策略系统")
         print(f"标的: {system_config.SYMBOLS}")
         hft_cfg = strategy_config.hft
-        print(f"配置:")
+        print("配置:")
         print(f"  最大仓位: {hft_cfg.max_total_position} 股")
         print(f"  止盈/止损: {hft_cfg.take_profit_ticks}/{hft_cfg.stop_loss_ticks} ticks")
         print(f"  日亏损限额: {hft_cfg.daily_loss_limit:,.0f} 日元")
@@ -58,7 +58,7 @@ async def main():
         print(f"\n模式: 双引擎网格策略")
         print(f"标的: {system_config.SYMBOLS}")
         de_cfg = strategy_config.dual_engine
-        print(f"配置:")
+        print("配置:")
         print(f"  核心仓位: {de_cfg.core_pos} 股")
         print(f"  最大仓位: {de_cfg.max_pos} 股")
         print(f"  网格步长: {de_cfg.grid_step_pct}%")
@@ -95,11 +95,8 @@ async def main():
             return
 
         # 初始化订单执行器
-        executor = KabuExecutor(
-            rest_url=system_config.REST_URL,
-            api_token=market_feed.api_token,
-            symbol=system_config.SYMBOLS[0]
-        )
+        executor = KabuOrderExecutor(config=system_config)
+        executor.api_token = market_feed.api_token  # 复用market_feed的token
 
         # 根据模式初始化不同的交易系统
         if strategy_config.mode == 'hft':
@@ -154,45 +151,47 @@ async def main():
 
                     try:
                         if signal.action == 0:  # BUY
-                            # 调用真实API下单
-                            order_result = await self.executor.send_order(
+                            # 调用真实API下单 (send_order是同步方法)
+                            order_id = self.executor.send_order(
+                                symbol=self.symbol,
                                 side="buy",
                                 price=price,
-                                quantity=qty
+                                qty=qty
                             )
 
-                            if order_result.get('success'):
+                            if order_id:
                                 cost = self.position * self.avg_cost + qty * price
                                 self.position += qty
                                 self.avg_cost = cost / self.position if self.position > 0 else 0
                                 self.trades.append(('BUY', qty, price, reason))
-                                logger.info(f"[{reason}] BUY {qty}股 @ {price:.2f} (持仓={self.position}) ✓")
+                                logger.info(f"[{reason}] BUY {qty}股 @ {price:.2f} (持仓={self.position}) OrderID={order_id} ✓")
 
                                 # 通知策略持仓变化
                                 self.strategy.on_fill(self.symbol, "BUY", price, qty)
                             else:
-                                logger.error(f"[{reason}] BUY {qty}股 @ {price:.2f} 失败: {order_result.get('error')}")
+                                logger.error(f"[{reason}] BUY {qty}股 @ {price:.2f} 失败")
 
                         elif signal.action == 1:  # SELL
                             if self.position >= qty:
-                                # 调用真实API下单
-                                order_result = await self.executor.send_order(
+                                # 调用真实API下单 (send_order是同步方法)
+                                order_id = self.executor.send_order(
+                                    symbol=self.symbol,
                                     side="sell",
                                     price=price,
-                                    quantity=qty
+                                    qty=qty
                                 )
 
-                                if order_result.get('success'):
+                                if order_id:
                                     pnl = (price - self.avg_cost) * qty
                                     self.total_pnl += pnl
                                     self.position -= qty
                                     self.trades.append(('SELL', qty, price, reason, pnl))
-                                    logger.info(f"[{reason}] SELL {qty}股 @ {price:.2f} (持仓={self.position}, 盈亏={pnl:.0f}) ✓")
+                                    logger.info(f"[{reason}] SELL {qty}股 @ {price:.2f} (持仓={self.position}, 盈亏={pnl:.0f}) OrderID={order_id} ✓")
 
                                     # 通知策略持仓变化
                                     self.strategy.on_fill(self.symbol, "SELL", price, qty)
                                 else:
-                                    logger.error(f"[{reason}] SELL {qty}股 @ {price:.2f} 失败: {order_result.get('error')}")
+                                    logger.error(f"[{reason}] SELL {qty}股 @ {price:.2f} 失败")
 
                     except Exception as e:
                         logger.error(f"执行信号失败: {e}", exc_info=True)
@@ -213,47 +212,66 @@ async def main():
 
         print("\n开始实时交易...\n")
 
-        # 启动WebSocket行情监听
-        tick_count = 0
-        async for board in market_feed.listen():
-            try:
-                if strategy_config.mode == 'hft':
-                    # HFT模式处理
-                    system.on_board(board)
+        # 创建队列用于接收行情tick
+        tick_queue: asyncio.Queue = asyncio.Queue()
 
-                    # 模拟成交（真实环境会通过API回调）
-                    # TODO: 在真实环境需要监听成交回调
-                    fills = executor.get_pending_fills()  # 需要实现
-                    for fill in fills:
-                        system.on_fill(fill)
-                else:
-                    # 双引擎模式处理
-                    tick = MarketTick(
-                        symbol=board['symbol'],
-                        timestamp_ns=int(board['timestamp'].timestamp() * 1e9),
-                        last_price=board['last_price'],
-                        bid_price=board['best_bid'],
-                        ask_price=board['best_ask'],
-                        volume=board.get('trading_volume', 0),
-                        bid_size=board['bids'][0][1] if board['bids'] else 0,
-                        ask_size=board['asks'][0][1] if board['asks'] else 0,
-                    )
-                    await system.on_tick(tick)
+        async def convert_tick_to_board(tick: MarketTick) -> dict:
+            """将 MarketTick 对象转换为 board 格式，以兼容 HFT 系统的 on_board 接口。"""
+            # 构造 bids/asks 列表，使用当前盘口报价和数量
+            bids = [(tick.bid_price, tick.bid_size)] if tick.bid_price is not None else []
+            asks = [(tick.ask_price, tick.ask_size)] if tick.ask_price is not None else []
+            board = {
+                'symbol': tick.symbol,
+                'timestamp': datetime.fromtimestamp(tick.timestamp_ns / 1e9),
+                'last_price': tick.last_price,
+                'best_bid': tick.bid_price,
+                'best_ask': tick.ask_price,
+                'bids': bids,
+                'asks': asks,
+                'trading_volume': tick.volume,
+            }
+            return board
 
-                tick_count += 1
+        # 消费行情的协程
+        async def process_tick_queue():
+            tick_count = 0
+            while True:
+                tick = await tick_queue.get()
+                try:
+                    # tick 可能是 MarketTick 或类似对象
+                    if strategy_config.mode == 'hft':
+                        # 转换为 board 供 HFT 系统使用
+                        board = await convert_tick_to_board(tick)
+                        system.on_board(board)
+                        # 模拟成交（真实环境会通过API回调）
+                        if hasattr(executor, 'get_pending_fills'):
+                            fills = executor.get_pending_fills() or []
+                            for fill in fills:
+                                system.on_fill(fill)
+                    else:
+                        # 双引擎模式直接处理 MarketTick
+                        await system.on_tick(tick)
 
-                # 每100个tick打印一次状态
-                if tick_count % 100 == 0:
-                    print(f"\n{'='*60}")
-                    print(f"Tick数: {tick_count}  |  时间: {datetime.now().strftime('%H:%M:%S')}")
-                    print(f"{'='*60}")
-                    system.print_status()
+                    tick_count += 1
+                    # 每100个tick打印一次状态
+                    if tick_count % 100 == 0:
+                        print(f"\n{'='*60}")
+                        print(f"Tick数: {tick_count}  |  时间: {datetime.now().strftime('%H:%M:%S')}")
+                        print(f"{'='*60}")
+                        if hasattr(system, 'print_status'):
+                            system.print_status()
 
-            except KeyboardInterrupt:
-                print("\n\n收到中断信号，正在安全退出...")
-                break
-            except Exception as e:
-                logger.error(f"处理行情失败: {e}", exc_info=True)
+                except KeyboardInterrupt:
+                    print("\n\n收到中断信号，正在安全退出...")
+                    break
+                except Exception as e:
+                    logger.error(f"处理行情失败: {e}", exc_info=True)
+
+        # 并发启动行情流和消费协程
+        await asyncio.gather(
+            market_feed.start_streaming(tick_queue),
+            process_tick_queue(),
+        )
 
     except KeyboardInterrupt:
         print("\n\n收到中断信号，正在安全退出...")
@@ -263,7 +281,7 @@ async def main():
         print("\n\n" + "=" * 80)
         print("交易系统已停止")
         print("=" * 80)
-        if hasattr(system, 'print_status'):
+        if 'system' in locals() and hasattr(system, 'print_status'):
             system.print_status()
 
 

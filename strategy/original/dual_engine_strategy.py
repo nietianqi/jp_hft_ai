@@ -457,10 +457,19 @@ class DualEngineTradingStrategy(TradingStrategy):
 
         # 初始化网格中心
         if st.grid_center <= 0:
-            st.grid_center = price
-            logger.info(
-                f"[DualEngine][Grid] 初始化网格中心：center={st.grid_center:.2f}"
-            )
+            # ✅ 修复：使用EMA慢线作为网格中心，避免在价格高点初始化
+            # 如果EMA慢线无效，则使用当前价格
+            if st.ema_slow > 0:
+                st.grid_center = st.ema_slow
+                logger.info(
+                    f"[DualEngine][Grid] 初始化网格中心（使用EMA慢线）：center={st.grid_center:.2f}, "
+                    f"当前价={price:.2f}"
+                )
+            else:
+                st.grid_center = price
+                logger.info(
+                    f"[DualEngine][Grid] 初始化网格中心（使用当前价）：center={st.grid_center:.2f}"
+                )
 
         # 检查是否需要重建网格
         center = st.grid_center
@@ -468,10 +477,15 @@ class DualEngineTradingStrategy(TradingStrategy):
 
         if deviation >= 2 * step_pct:
             old_center = st.grid_center
-            st.grid_center = price
+            # ✅ 修复：重建网格时也使用EMA慢线，避免在价格高点重建
+            if st.ema_slow > 0:
+                st.grid_center = st.ema_slow
+            else:
+                st.grid_center = price
             logger.info(
                 f"[DualEngine][Grid] 爬坡重建网格：old_center={old_center:.2f}, "
-                f"new_center={price:.2f}, deviation={deviation*100:.2f}%"
+                f"new_center={st.grid_center:.2f}, current_price={price:.2f}, "
+                f"ema_slow={st.ema_slow:.2f}, deviation={deviation*100:.2f}%"
             )
 
         # 生成网格信号（这里简化为只生成最近的一层信号）

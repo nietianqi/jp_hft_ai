@@ -32,7 +32,7 @@ async def main():
     # 加载配置
     sys_config = SystemConfig()
     trading_config = TradingConfig()
-    strategy_config = StrategyConfig(mode='hft')
+    strategy_config = StrategyConfig(mode='dual_engine')
 
     print(f"正在连接: {sys_config.REST_URL}")
     print(f"标的: {sys_config.SYMBOLS[0]}")
@@ -60,15 +60,30 @@ async def main():
         )
 
         # ⚠️ 安全设置: 从小仓位开始!
-        hft_cfg = strategy_config.hft
-        system.meta_manager.cfg.total_capital = hft_cfg.total_capital
-        system.meta_manager.cfg.max_total_position = 100  # ⚠️ 首次运行仅100股!
-        system.meta_manager.cfg.daily_loss_limit = 50_000  # ⚠️ 首次运行限制5万日元
+        if strategy_config.mode == 'dual_engine':
+            dual_cfg = strategy_config.dual_engine
+            system.meta_manager.cfg.max_total_position = 100  # ⚠️ 首次运行仅100股!
+            system.meta_manager.cfg.daily_loss_limit = 50_000  # ⚠️ 首次运行限制5万日元
 
-        print("\n系统配置:")
-        print(f"  最大仓位: {system.meta_manager.cfg.max_total_position} 股 (⚠️ 小仓位测试)")
-        print(f"  日亏损限额: {system.meta_manager.cfg.daily_loss_limit:,.0f} 日元")
-        print(f"  止盈/止损: {hft_cfg.take_profit_ticks}/{hft_cfg.stop_loss_ticks} ticks")
+            print("\n系统配置:")
+            print(f"  模式: 双引擎网格策略")
+            print(f"  核心仓位: {dual_cfg.core_pos} 股")
+            print(f"  最大仓位: {system.meta_manager.cfg.max_total_position} 股 (⚠️ 小仓位测试)")
+            print(f"  日亏损限额: {system.meta_manager.cfg.daily_loss_limit:,.0f} 日元")
+            print(f"  网格层数: {dual_cfg.grid_levels} 层")
+            print(f"  网格步长: {dual_cfg.grid_step_pct}%")
+            print(f"  动态止盈: {'启用' if dual_cfg.enable_dynamic_exit else '禁用'}")
+        else:
+            hft_cfg = strategy_config.hft
+            system.meta_manager.cfg.total_capital = hft_cfg.total_capital
+            system.meta_manager.cfg.max_total_position = 100  # ⚠️ 首次运行仅100股!
+            system.meta_manager.cfg.daily_loss_limit = 50_000  # ⚠️ 首次运行限制5万日元
+
+            print("\n系统配置:")
+            print(f"  模式: 高频交易策略")
+            print(f"  最大仓位: {system.meta_manager.cfg.max_total_position} 股 (⚠️ 小仓位测试)")
+            print(f"  日亏损限额: {system.meta_manager.cfg.daily_loss_limit:,.0f} 日元")
+            print(f"  止盈/止损: {hft_cfg.take_profit_ticks}/{hft_cfg.stop_loss_ticks} ticks")
         print("=" * 80)
 
         # 创建行情队列

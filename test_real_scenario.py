@@ -87,7 +87,7 @@ class RealGateway:
         return fills
 
 
-async def test_real_scenario():
+async def run_real_scenario():
     """测试真实场景"""
     print("\n" + "="*80)
     print("真实场景测试 - 检查止盈是否触发")
@@ -185,5 +185,10 @@ async def test_real_scenario():
     print(f"\n是否触发止盈: {'是' if strategy.position == 0 and gateway.order_count > 2 else '否'}")
 
 
+def test_real_scenario():
+    """同步入口以便pytest在无异步插件时也能运行。"""
+    asyncio.run(run_real_scenario())
+
+
 if __name__ == "__main__":
-    asyncio.run(test_real_scenario())
+    asyncio.run(run_real_scenario())

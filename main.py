@@ -1,297 +1,194 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-main.py - 修复版主程序
+main.py - Kabu真实交易系统（6策略版本）
 
-修复:统一gateway为同步接口
+策略列表:
+1. 做市策略 (15%)
+2. 流动性抢占 (15%)
+3. 订单流策略 (10%)
+4. 微网格震荡剥头皮 (25%)
+5. 短周期动量跟随 (20%)
+6. 盘口统计订单流 (15%)
+
+⚠️ 警告：这是真实交易脚本，会使用真金白银！
+使用前请确保：
+1. Kabu Station已启动
+2. API功能已启用
+3. 配置文件中的参数已正确设置
+4. 已充分理解策略逻辑和风险
 """
 
 import asyncio
-import sys
-import random
+import logging
 from datetime import datetime
 
 from config.system_config import SystemConfig
-from config.trading_config import TradingConfig
-from config.strategy_config import StrategyConfig
+from market.kabu_feed import KabuMarketFeed
+from execution.kabu_executor import KabuOrderExecutor
+from integrated_trading_system_v2 import IntegratedTradingSystemV2
+from models.market_data import MarketTick
 
-
-class DummyGateway:
-    """模拟网关 - 修复版(同步接口)"""
-    
-    def __init__(self):
-        self.orders = {}
-    
-    def send_order(self, symbol, side, price, qty, order_type="LIMIT", strategy_type=None):
-        """✅修复:改为同步方法，添加策略类型标识"""
-        import uuid
-        order_id = str(uuid.uuid4())[:8]
-        self.orders[order_id] = {
-            'symbol': symbol,
-            'side': side,
-            'quantity': qty,
-            'price': price,
-            'status': 'PENDING',
-            'strategy_type': strategy_type  # ← 新增：记录订单来自哪个策略
-        }
-        strategy_name = strategy_type.name if strategy_type is not None else "UNKNOWN"
-        print(f"[网关][{strategy_name}] {side} {symbol}: {qty}股 @ {price:.1f} (订单ID: {order_id})")
-        return order_id
-    
-    def cancel_order(self, order_id):
-        """✅修复:改为同步方法"""
-        if order_id in self.orders:
-            self.orders[order_id]['status'] = 'CANCELLED'
-            print(f"[网关] 撤单: {order_id}")
-            return True
-        return False
-    
-    def simulate_fills(self, current_price):
-        """模拟订单成交"""
-        fills = []
-        for order_id, order in list(self.orders.items()):
-            if order['status'] != 'PENDING':
-                continue
-
-            if random.random() < 0.3:
-                if order['side'] == 'BUY' and current_price <= order['price']:
-                    strategy_type = order.get('strategy_type')
-                    strategy_name = strategy_type.name if strategy_type is not None else "UNKNOWN"
-                    fills.append({
-                        'order_id': order_id,
-                        'symbol': order['symbol'],
-                        'side': order['side'],
-                        'quantity': order['quantity'],
-                        'price': order['price'],
-                        'strategy_type': strategy_type  # ← 新增：成交回报包含策略类型
-                    })
-                    order['status'] = 'FILLED'
-                    print(f"[网关][{strategy_name}] 成交: {order_id} - BUY {order['quantity']}@{order['price']:.1f}")
-
-                elif order['side'] == 'SELL' and current_price >= order['price']:
-                    strategy_type = order.get('strategy_type')
-                    strategy_name = strategy_type.name if strategy_type is not None else "UNKNOWN"
-                    fills.append({
-                        'order_id': order_id,
-                        'symbol': order['symbol'],
-                        'side': order['side'],
-                        'quantity': order['quantity'],
-                        'price': order['price'],
-                        'strategy_type': strategy_type  # ← 新增：成交回报包含策略类型
-                    })
-                    order['status'] = 'FILLED'
-                    print(f"[网关][{strategy_name}] 成交: {order_id} - SELL {order['quantity']}@{order['price']:.1f}")
-
-        return fills
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.FileHandler(f'kabu_6strategies_{datetime.now().strftime("%Y%m%d_%H%M%S")}.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
 
 async def main():
-    """主程序"""
+    """真实Kabu API交易主函数 - 6策略版本"""
+
     print("\n" + "=" * 80)
-    print("Kabu HFT交易系统 - 修复版")
+    print("⚠️  Kabu 真实交易系统 - 6策略版本 - 请谨慎操作！")
     print("=" * 80)
-    
+
+    # 加载配置
     system_config = SystemConfig()
-    trading_config = TradingConfig()
-    strategy_config = StrategyConfig()  # ✅ Use mode from config file
 
-    # Display current mode
-    if strategy_config.mode == 'hft':
-        print(f"模式: HFT三策略系统")
-        print(f"标的: {system_config.SYMBOLS[0]}")
+    print(f"\n模式: HFT六策略系统")
+    print(f"标的: {system_config.SYMBOLS}")
+    print("\n策略配置:")
+    print("  1. 做市策略 (15%)")
+    print("  2. 流动性抢占 (15%)")
+    print("  3. 订单流策略 (10%)")
+    print("  4. 微网格震荡剥头皮 (25%)")
+    print("  5. 短周期动量跟随 (20%)")
+    print("  6. 盘口统计订单流 (15%)")
 
-        hft_cfg = strategy_config.hft
-        print(f"配置:")
-        print(f"  最大仓位: {hft_cfg.max_total_position} 股")
-        print(f"  止盈/止损: {hft_cfg.take_profit_ticks}/{hft_cfg.stop_loss_ticks} ticks")
-        print(f"  日亏损限额: {hft_cfg.daily_loss_limit:,.0f} 日元")
-        print(f"  策略权重: 做市{hft_cfg.strategy_weights['market_making']:.0%} + "
-              f"流动性{hft_cfg.strategy_weights['liquidity_taker']:.0%} + "
-              f"订单流{hft_cfg.strategy_weights['orderflow_queue']:.0%}")
-    else:  # dual_engine
-        print(f"模式: 双引擎网格策略")
-        print(f"标的: {system_config.SYMBOLS[0]}")
-
-        de_cfg = strategy_config.dual_engine
-        print(f"配置:")
-        print(f"  核心仓位: {de_cfg.core_pos} 股")
-        print(f"  最大仓位: {de_cfg.max_pos} 股")
-        print(f"  网格步长: {de_cfg.grid_step_pct}%")
-        print(f"  动态止盈: {'启用' if de_cfg.enable_dynamic_exit else '禁用'}")
+    print(f"\nKabu API:")
+    print(f"  REST地址: {system_config.REST_URL}")
+    print(f"  WebSocket地址: {system_config.WS_URL}")
     print("=" * 80)
+
+    # ⚠️ 安全确认
+    print("\n⚠️  这是真实交易，会使用真金白银！")
+    print("请确认您已:")
+    print("  1. ✓ Kabu Station已启动")
+    print("  2. ✓ 理解策略逻辑和风险")
+    print("  3. ✓ 检查过所有配置参数")
+    print("  4. ✓ 准备好承担可能的损失")
+
+    confirm = input("\n输入 'YES' 继续，其他任意键取消: ")
+    if confirm != 'YES':
+        print("\n✗ 已取消启动")
+        return
+
+    print("\n正在初始化系统...\n")
 
     try:
-        gateway = DummyGateway()
+        # 初始化行情订阅
+        market_feed = KabuMarketFeed(system_config)
 
-        # Initialize system based on mode
-        if strategy_config.mode == 'hft':
-            from integrated_trading_system import IntegratedTradingSystem
+        # 订阅行情
+        subscribe_success = await market_feed.subscribe(system_config.SYMBOLS)
+        if not subscribe_success:
+            print("\n✗ 行情订阅失败，请检查Kabu Station是否运行")
+            return
 
-            system = IntegratedTradingSystem(
-                gateway=gateway,
-                symbol=system_config.SYMBOLS[0],
-                tick_size=0.1,
-            )
+        # 初始化订单执行器
+        executor = KabuOrderExecutor(config=system_config)
+        executor.api_token = market_feed.api_token  # 复用market_feed的token
 
-            hft_cfg = strategy_config.hft
-            system.meta_manager.cfg.total_capital = hft_cfg.total_capital
-            system.meta_manager.cfg.max_total_position = hft_cfg.max_total_position
-            system.meta_manager.cfg.daily_loss_limit = hft_cfg.daily_loss_limit
+        # 初始化6策略交易系统
+        system = IntegratedTradingSystemV2(
+            gateway=executor,
+            symbol=system_config.SYMBOLS[0],
+            tick_size=0.1,
+        )
 
-            print("\n✓ HFT系统初始化成功")
-        else:  # dual_engine
-            from strategy.original.dual_engine_strategy import DualEngineTradingStrategy
-            from models.market_data import MarketTick
+        print("\n✓ 6策略系统初始化成功")
+        print("\n开始实时交易...\n")
 
-            de_cfg = strategy_config.dual_engine
-            strategy = DualEngineTradingStrategy(config=de_cfg)
+        # 创建队列用于接收行情tick
+        tick_queue: asyncio.Queue = asyncio.Queue()
 
-            # Simple position tracker for dual-engine
-            class DualEngineSystem:
-                def __init__(self, strategy, symbol):
-                    self.strategy = strategy
-                    self.symbol = symbol
-                    self.position = 0
-                    self.avg_cost = 0.0
-                    self.total_pnl = 0.0
-                    self.trades = []
-
-                def on_board(self, board):
-                    """Process market data"""
-                    tick = MarketTick(
-                        symbol=board['symbol'],
-                        timestamp_ns=int(board['timestamp'].timestamp() * 1e9),
-                        last_price=board['last_price'],
-                        bid_price=board['best_bid'],
-                        ask_price=board['best_ask'],
-                        volume=board.get('trading_volume', 0),
-                        bid_size=board['bids'][0][1] if board['bids'] else 0,
-                        ask_size=board['asks'][0][1] if board['asks'] else 0,
-                    )
-
-                    self.strategy.update_indicators(tick)
-                    signal = self.strategy.generate_signal(tick)
-
-                    if signal:
-                        self._execute_signal(signal, tick.last_price)
-
-                def _execute_signal(self, signal, price):
-                    """Execute trading signal"""
-                    qty = signal.quantity
-                    reason_map = {1: 'core', 2: 'grid_buy', 3: 'grid_sell',
-                                  4: 'exit', 5: 'trailing', 6: 'profit'}
-                    reason = reason_map.get(signal.reason_code, f'code_{signal.reason_code}')
-
-                    if signal.action == 0:  # BUY
-                        cost = self.position * self.avg_cost + qty * price
-                        self.position += qty
-                        self.avg_cost = cost / self.position if self.position > 0 else 0
-                        self.trades.append(('BUY', qty, price, reason))
-                        print(f"[{reason}] BUY {qty}股 @ {price:.2f} (持仓={self.position})")
-
-                        # ✅ 关键：通知策略持仓变化
-                        self.strategy.on_fill(self.symbol, "BUY", price, qty)
-
-                    elif signal.action == 1:  # SELL
-                        if self.position >= qty:
-                            pnl = (price - self.avg_cost) * qty
-                            self.total_pnl += pnl
-                            self.position -= qty
-                            self.trades.append(('SELL', qty, price, reason, pnl))
-                            print(f"[{reason}] SELL {qty}股 @ {price:.2f} (持仓={self.position}, 盈亏={pnl:.0f})")
-
-                            # ✅ 关键：通知策略持仓变化
-                            self.strategy.on_fill(self.symbol, "SELL", price, qty)
-
-                def print_status(self):
-                    """Print system status"""
-                    status = self.strategy.get_strategy_status(self.symbol)
-                    print(f"\n双引擎策略状态:")
-                    print(f"  持仓: {self.position} 股")
-                    print(f"  成本价: {self.avg_cost:.2f}")
-                    print(f"  累计盈亏: {self.total_pnl:.0f} JPY")
-                    print(f"  趋势状态: {'震荡上行✓' if status.get('trend_up') else '趋势失效✗'}")
-                    print(f"  网格中心: {status.get('grid_center', 0):.2f}")
-                    print(f"  网格层数: {status.get('active_grid_levels', 0)}")
-
-            system = DualEngineSystem(strategy, system_config.SYMBOLS[0])
-            print("\n✓ 双引擎策略初始化成功")
-
-        print("\n开始模拟测试...\n")
-        
-        base_price = 1000.0
-        tick_count = 0
-        
-        for i in range(200):
-            base_price += random.uniform(-2.0, 2.0)
-            base_price = max(950.0, min(base_price, 1050.0))
-            
-            spread = random.uniform(1.0, 3.0)
-            bid_price = base_price - spread/2
-            ask_price = base_price + spread/2
-            
+        async def convert_tick_to_board(tick: MarketTick) -> dict:
+            """将 MarketTick 对象转换为 board 格式"""
+            bids = [(tick.bid_price, tick.bid_size)] if tick.bid_price is not None else []
+            asks = [(tick.ask_price, tick.ask_size)] if tick.ask_price is not None else []
             board = {
-                "symbol": system_config.SYMBOLS[0],
-                "timestamp": datetime.now(),
-                "best_bid": bid_price,
-                "best_ask": ask_price,
-                "last_price": base_price,
-                "bids": [(bid_price - i, random.randint(100, 500)) for i in range(5)],
-                "asks": [(ask_price + i, random.randint(100, 500)) for i in range(5)],
-                "trading_volume": random.randint(10000, 50000),
-                "buy_market_order": random.randint(100, 1000),
-                "sell_market_order": random.randint(100, 1000),
+                'symbol': tick.symbol,
+                'timestamp': datetime.fromtimestamp(tick.timestamp_ns / 1e9),
+                'last_price': tick.last_price,
+                'best_bid': tick.bid_price,
+                'best_ask': tick.ask_price,
+                'bids': bids,
+                'asks': asks,
+                'trading_volume': tick.volume,
+                'buy_market_order': 0,  # Kabu API可能不提供，设为0
+                'sell_market_order': 0,
             }
-            
-            system.on_board(board)
-            tick_count += 1
+            return board
 
-            # HFT mode needs fill simulation
-            if strategy_config.mode == 'hft':
-                fills = gateway.simulate_fills(base_price)
-                for fill in fills:
-                    system.on_fill(fill)
+        # 消费行情的协程
+        async def process_tick_queue():
+            tick_count = 0
+            while True:
+                tick = await tick_queue.get()
+                try:
+                    # 转换为 board 供系统使用
+                    board = await convert_tick_to_board(tick)
+                    system.on_board(board)
 
-            await asyncio.sleep(0.01)
-            
-            if (i + 1) % 100 == 0:
-                print(f"\n{'='*60}")
-                print(f"进度: {i+1}/200 ticks  |  当前价格: {base_price:.1f}")
-                print(f"{'='*60}")
-                system.print_status()
-        
-        print("\n\n" + "=" * 80)
-        print("测试完成 - 最终状态")
-        print("=" * 80)
-        system.print_status()
-        
-        print("\n" + "=" * 80)
-        print("测试总结")
-        print("=" * 80)
-        print(f"总Tick数: {tick_count}")
-        print(f"挂单总数: {len([o for o in gateway.orders.values() if o['status'] == 'PENDING'])}")
-        print(f"成交总数: {len([o for o in gateway.orders.values() if o['status'] == 'FILLED'])}")
-        
+                    # 处理成交回报（真实环境会通过API回调）
+                    if hasattr(executor, 'get_pending_fills'):
+                        fills = executor.get_pending_fills() or []
+                        for fill in fills:
+                            system.on_fill(fill)
+
+                    tick_count += 1
+                    # 每100个tick打印一次状态
+                    if tick_count % 100 == 0:
+                        print(f"\n{'='*60}")
+                        print(f"Tick数: {tick_count}  |  时间: {datetime.now().strftime('%H:%M:%S')}")
+                        print(f"{'='*60}")
+                        if hasattr(system, 'print_status'):
+                            system.print_status()
+
+                except KeyboardInterrupt:
+                    print("\n\n收到中断信号，正在安全退出...")
+                    break
+                except Exception as e:
+                    logger.error(f"处理行情失败: {e}", exc_info=True)
+
+        # 并发启动行情流和消费协程
+        await asyncio.gather(
+            market_feed.start_streaming(tick_queue),
+            process_tick_queue(),
+        )
+
+    except KeyboardInterrupt:
+        print("\n\n收到中断信号，正在安全退出...")
     except Exception as e:
-        print(f"\n✗ 系统错误: {e}")
-        import traceback
-        traceback.print_exc()
-        return 1
-    
-    return 0
+        logger.error(f"系统错误: {e}", exc_info=True)
+    finally:
+        print("\n\n" + "=" * 80)
+        print("交易系统已停止")
+        print("=" * 80)
+        if 'system' in locals() and hasattr(system, 'print_status'):
+            system.print_status()
+
+        # 打印策略贡献分析
+        if 'system' in locals() and hasattr(system, 'meta_manager'):
+            print("\n策略贡献分析:")
+            from engine.meta_strategy_manager import StrategyType
+            for strategy_type in [
+                StrategyType.MARKET_MAKING,
+                StrategyType.LIQUIDITY_TAKER,
+                StrategyType.ORDER_FLOW,
+                StrategyType.MICRO_GRID,
+                StrategyType.SHORT_MOMENTUM,
+                StrategyType.TAPE_READING,
+            ]:
+                # 可以从meta_manager获取统计信息
+                print(f"  {strategy_type.name}: 详见日志")
 
 
 if __name__ == "__main__":
-    print(f"启动时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-    
-    try:
-        exit_code = asyncio.run(main())
-        sys.exit(exit_code)
-    except KeyboardInterrupt:
-        print("\n\n程序中断 (Ctrl+C)")
-        sys.exit(0)
-    except Exception as e:
-        print(f"\n\n致命错误: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    asyncio.run(main())

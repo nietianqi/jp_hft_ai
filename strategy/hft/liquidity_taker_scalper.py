@@ -154,9 +154,10 @@ class KabuLiquidityTakerScalper:
     def _open_long(self, best_ask: float, now: datetime) -> None:
         if self.position >= self.cfg.max_position:
             return
-        
+
         qty = min(self.cfg.order_volume, self.cfg.max_position - self.position)
-        price = best_ask + self.cfg.max_slip_ticks * self.cfg.tick_size
+        # ✅修复: 做多应该在ask价买入,不应该加滑点(否则价格更差)
+        price = best_ask
         
         if self.meta:
             from engine.meta_strategy_manager import StrategyType
@@ -181,9 +182,10 @@ class KabuLiquidityTakerScalper:
     def _open_short(self, best_bid: float, now: datetime) -> None:
         if abs(self.position) >= self.cfg.max_position:
             return
-        
+
         qty = min(self.cfg.order_volume, self.cfg.max_position - abs(self.position))
-        price = best_bid - self.cfg.max_slip_ticks * self.cfg.tick_size
+        # ✅修复: 做空应该在bid价卖出,不应该减滑点(否则价格更差)
+        price = best_bid
         
         if self.meta:
             from engine.meta_strategy_manager import StrategyType

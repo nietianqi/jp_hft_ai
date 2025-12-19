@@ -289,10 +289,12 @@ class MarketMakingStrategy:
         half_spread = spread_ticks * self.cfg.tick_size / 2.0
         bid_target = mid_skewed - half_spread
         ask_target = mid_skewed + half_spread
-        
-        bid_target = min(bid_target, best_bid)
-        ask_target = max(ask_target, best_ask)
-        
+
+        # ✅修复: 删除强制价格变差的逻辑
+        # 做市商应该挂在盘口内侧提供流动性,不应该强制价格更差
+        # bid_target = min(bid_target, best_bid)  # 原逻辑导致买入价更低
+        # ask_target = max(ask_target, best_ask)  # 原逻辑导致卖出价更高
+
         bid_target = self._round_down_to_tick(bid_target)
         ask_target = self._round_up_to_tick(ask_target)
         

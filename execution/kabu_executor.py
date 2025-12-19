@@ -194,13 +194,15 @@ class KabuOrderExecutor(OrderExecutor):
                 print(f"卖出异常: {e}")
                 return None
 
-    async def cancel_order(self, order_id: str) -> bool:
+    async def cancel_order_async(self, order_id: str) -> bool:
+        """异步撤单接口"""
         async with self.rate_limiter:
             await self._ensure_client()
 
             try:
                 cached = self.order_cache.get(order_id)
                 if not cached:
+                    print(f"[Executor] 撤单失败: 订单{order_id}不存在缓存中")
                     return False
 
                 payload = {
@@ -218,10 +220,17 @@ class KabuOrderExecutor(OrderExecutor):
                 success = response.status_code == 200
                 if success:
                     self.order_cache.pop(order_id, None)
+                    print(f"✓ [{cached['symbol']}] 撤单成功: {order_id}")
+                else:
+                    error_body = response.content.decode('utf-8') if response.content else 'No response body'
+                    print(f"❌ 撤单失败 [{cached['symbol']}]:")
+                    print(f"  HTTP状态码: {response.status_code}")
+                    print(f"  错误响应: {error_body}")
 
                 return success
 
             except Exception as e:
+                print(f"[Executor] 撤单异常: {e}")
                 return False
 
     async def get_order_status(self, order_id: str) -> str:
@@ -316,9 +325,31 @@ class KabuOrderExecutor(OrderExecutor):
 
     def cancel_order(self, order_id: str) -> bool:
         """同步接口:撤单(兼容策略调用)"""
-        # 简化版本:直接返回False,真实环境需要实现
-        print(f"[Executor] 撤单请求: {order_id} (当前为简化实现)")
-        return False
+        import asyncio
+        import threading
+
+        result = [False]
+        exception = [None]
+
+        def run_async():
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                result[0] = loop.run_until_complete(self.cancel_order_async(order_id))
+                loop.close()
+            except Exception as e:
+                exception[0] = e
+
+        thread = threading.Thread(target=run_async)
+        thread.start()
+        thread.join(timeout=5.0)
+
+        if exception[0]:
+            print(f"[Executor] 撤单异常: {exception[0]}")
+            return False
+
+        return result[0]
+
 
     async def close(self):
         if self.http_client:

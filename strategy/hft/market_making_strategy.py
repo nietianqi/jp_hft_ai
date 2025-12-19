@@ -36,7 +36,7 @@ class MarketMakingConfig:
     inventory_skew_factor_ticks: float = 1.0
 
     quote_refresh_interval: float = 0.5
-    price_change_requote_threshold_ticks: int = 1
+    price_change_requote_threshold_ticks: int = 1  # 价格偏离1 tick就撤单重挂
 
     # 止盈止损配置
     take_profit_ticks: int = 2
@@ -342,7 +342,11 @@ class MarketMakingStrategy:
             diff_ticks = abs(target_price - current_price) / self.cfg.tick_size
             if diff_ticks < self.cfg.price_change_requote_threshold_ticks:
                 return
-            self.gateway.cancel_order(order_id)
+            # ✅ 价格偏离过大，自动撤单重挂
+            print(f"🔄 {self.cfg.log_prefix} [自动重挂] {side}单价格偏离{diff_ticks:.1f}T: {current_price:.1f}→{target_price:.1f}")
+            success = self.gateway.cancel_order(order_id)
+            if success:
+                logger.info(f"{self.cfg.log_prefix} 撤单成功，准备重新挂{side}单 @ {target_price:.1f}")
             setattr(self, order_id_attr, None)
             setattr(self, price_attr, None)
         

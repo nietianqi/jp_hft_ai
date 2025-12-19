@@ -295,14 +295,14 @@ class OrderFlowAlternativeStrategy:
 
         reason = None
 
-        # ========== 新策略: 盈利缩水立即平仓，亏损硬扛 ==========
+        # ========== 新策略: 盈利≥1tick开始追踪，缩水立即平仓，亏损硬扛 ==========
         if self.cfg.enable_dynamic_exit:
-            # 只要有盈利（哪怕0.1 tick），就开始追踪
-            if pnl_ticks > 0:
+            # ✅修改: 只有盈利≥1 tick才开始追踪止盈
+            if pnl_ticks >= 1.0:
                 # 初始化或更新最优价格
                 if self.best_profit_price is None:
                     self.best_profit_price = last_price
-                    logger.debug(f"{self.cfg.log_prefix} [锁定盈利] 开始追踪，当前盈利={pnl_ticks:.1f}T")
+                    logger.debug(f"{self.cfg.log_prefix} [锁定盈利] 盈利达到1T，开始追踪，当前盈利={pnl_ticks:.1f}T")
                 else:
                     # 做多：检查价格是否还在上涨
                     if self.position > 0:

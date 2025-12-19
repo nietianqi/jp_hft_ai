@@ -283,7 +283,7 @@ class OrderFlowAlternativeStrategy:
         logger.info(f"{self.cfg.log_prefix} 做空 {qty}@{aggressive_price:.1f}")
     
     def _manage_position(self, now: datetime, board: Dict[str, Any]) -> None:
-        """✅修复: 支持动态止盈模式"""
+        """✅新策略: 盈利立即锁定，亏损硬扛"""
         if self.position == 0 or not board or self.avg_price is None:
             return
 
@@ -295,35 +295,43 @@ class OrderFlowAlternativeStrategy:
 
         reason = None
 
-        # ========== 模式1: 动态止盈 ==========
+        # ========== 新策略: 盈利缩水立即平仓，亏损硬扛 ==========
         if self.cfg.enable_dynamic_exit:
-            # 更新最优价格
-            if self.best_profit_price is None:
-                self.best_profit_price = last_price
-            else:
-                if self.position > 0 and last_price > self.best_profit_price:
+            # 只要有盈利（哪怕0.1 tick），就开始追踪
+            if pnl_ticks > 0:
+                # 初始化或更新最优价格
+                if self.best_profit_price is None:
                     self.best_profit_price = last_price
-                elif self.position < 0 and last_price < self.best_profit_price:
-                    self.best_profit_price = last_price
-
-            # 判断是否有盈利
-            has_profit = pnl_ticks >= self.cfg.dynamic_profit_threshold_ticks
-
-            if has_profit:
-                # 有盈利时，检查方向是否反转
-                if self.position > 0:
-                    reversal_ticks = (self.best_profit_price - last_price) / self.cfg.tick_size
+                    logger.debug(f"{self.cfg.log_prefix} [锁定盈利] 开始追踪，当前盈利={pnl_ticks:.1f}T")
                 else:
-                    reversal_ticks = (last_price - self.best_profit_price) / self.cfg.tick_size
+                    # 做多：检查价格是否还在上涨
+                    if self.position > 0:
+                        if last_price > self.best_profit_price:
+                            # 价格继续上涨，更新最高价
+                            self.best_profit_price = last_price
+                            logger.debug(f"{self.cfg.log_prefix} [锁定盈利] 价格创新高={last_price:.1f}，盈利={pnl_ticks:.1f}T")
+                        else:
+                            # 价格开始下跌！立即平仓锁定盈利
+                            reversal_ticks = (self.best_profit_price - last_price) / self.cfg.tick_size
+                            reason = "profit_lock"
+                            print(f"💰 {self.cfg.log_prefix} [锁定盈利] 价格回落! 最高={self.best_profit_price:.1f}, 当前={last_price:.1f}, 回撤={reversal_ticks:.1f}T → 立即平仓锁定盈利={pnl_ticks:.1f}T")
 
-                if reversal_ticks >= self.cfg.dynamic_reversal_ticks:
-                    reason = "dynamic_exit_reversal"
-                    print(f"✅ {self.cfg.log_prefix} [动态止盈] 触发! 盈利={pnl_ticks:.1f}T, 回撤={reversal_ticks:.1f}T → 平仓")
+                    # 做空：检查价格是否还在下跌
+                    elif self.position < 0:
+                        if last_price < self.best_profit_price:
+                            # 价格继续下跌，更新最低价
+                            self.best_profit_price = last_price
+                            logger.debug(f"{self.cfg.log_prefix} [锁定盈利] 价格创新低={last_price:.1f}，盈利={pnl_ticks:.1f}T")
+                        else:
+                            # 价格开始上涨！立即平仓锁定盈利
+                            reversal_ticks = (last_price - self.best_profit_price) / self.cfg.tick_size
+                            reason = "profit_lock"
+                            print(f"💰 {self.cfg.log_prefix} [锁定盈利] 价格回升! 最低={self.best_profit_price:.1f}, 当前={last_price:.1f}, 回撤={reversal_ticks:.1f}T → 立即平仓锁定盈利={pnl_ticks:.1f}T")
             else:
-                # 亏损时不止损，等待反转
-                logger.debug(f"{self.cfg.log_prefix} [动态止盈] 暂无盈利({pnl_ticks:.1f}T)，继续持有")
+                # 亏损时：硬扛，不平仓
+                logger.debug(f"{self.cfg.log_prefix} [硬扛亏损] 当前亏损={pnl_ticks:.1f}T，继续持有等待反转")
 
-        # ========== 模式2: 传统止盈止损 ==========
+        # ========== 传统止盈止损（备用） ==========
         else:
             if pnl_ticks >= self.cfg.take_profit_ticks:
                 reason = "take_profit"

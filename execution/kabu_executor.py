@@ -122,6 +122,12 @@ class KabuOrderExecutor(OrderExecutor):
                         print(f"[{signal.symbol}] 买入: {order_id} @ {signal.price:.1f}")
                         return order_id
                 else:
+                    # ✅新增:打印详细错误信息
+                    error_body = response.content.decode('utf-8') if response.content else 'No response body'
+                    print(f"❌ 买入订单失败 [{signal.symbol}]:")
+                    print(f"  HTTP状态码: {response.status_code}")
+                    print(f"  错误响应: {error_body}")
+                    print(f"  订单参数: {payload}")
                     self.failed_orders.add(signal.symbol)
                     return None
 
@@ -174,6 +180,13 @@ class KabuOrderExecutor(OrderExecutor):
 
                         print(f"[{symbol}] 卖出: {order_id} @ {price:.1f} - {reason}")
                         return order_id
+                else:
+                    # ✅新增:打印详细错误信息
+                    error_body = response.content.decode('utf-8') if response.content else 'No response body'
+                    print(f"❌ 卖出订单失败 [{symbol}]:")
+                    print(f"  HTTP状态码: {response.status_code}")
+                    print(f"  错误响应: {error_body}")
+                    print(f"  订单参数: {payload}")
 
                 return None
 
